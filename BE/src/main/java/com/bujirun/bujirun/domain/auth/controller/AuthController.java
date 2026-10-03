@@ -1,0 +1,95 @@
+package com.bujirun.bujirun.domain.auth.controller;
+
+import com.bujirun.bujirun.global.jwt.JwtProvider;
+import com.bujirun.bujirun.global.jwt.RefreshTokenRepository;
+import com.bujirun.bujirun.global.jwt.dto.TokenResponse;
+import com.bujirun.bujirun.global.response.ApiResponse;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.servlet.http.Cookie;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.ResponseCookie;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+
+import java.util.Arrays;
+import java.util.UUID;
+
+@Tag(name = "인증", description = "Access Token 재발급 및 로그아웃 API")
+@RestController
+@RequestMapping("/api/auth")
+@RequiredArgsConstructor
+public class AuthController {
+
+    private final JwtProvider jwtProvider;
+    private final RefreshTokenRepository refreshTokenRepository;
+
+    @Operation(summary = "Access Token 재발급", description = "쿠키에 저장된 Refresh Token을 검증하여 새로운 Access Token을 발급합니다.")
+    @PostMapping("/reissue")
+    public ApiResponse<TokenResponse> reissue(HttpServletRequest request) {
+
+        // 쿠키에서 Refresh Token 꺼내기
+        Cookie[] cookies = request.getCookies();
+        if (cookies == null) {
+            throw new IllegalArgumentException("쿠키가 없습니다");
+        }
+
+        String refreshToken = Arrays.stream(cookies)
+                .filter(c -> c.getName().equals("refresh_token"))
+                .findFirst()
+                .map(Cookie::getValue)
+                .orElseThrow(() -> new IllegalArgumentException("Refresh Token이 없습니다"));
+
+        // Refresh Token 유효성 검증
+        if (!jwtProvider.validateToken(refreshToken)) {
+            throw new IllegalArgumentException("유효하지 않은 Refresh Token입니다");
+        }
+
+        // 토큰에서 유저 ID 추출
+        UUID userId = jwtProvider.extractUserId(refreshToken);
+
+        // Redis에 저장된 Refresh Token과 비교
+        String savedToken = refreshTokenRepository.find(userId);
+        if (!refreshToken.equals(savedToken)) {
+            throw new IllegalArgumentException("Refresh Token이 일치하지 않습니다");
+        }
+
+        // 새 Access Token 발급
+        TokenResponse token = jwtProvider.createTokenResponse(userId);
+
+        return ApiResponse.ok(token);
+    }
+
+    @Operation(summary = "로그아웃", description = "Redis에 저장된 Refresh Token을 삭제하고 쿠키를 만료시킵니다.")
+    @PostMapping("/logout")
+    public ApiResponse<Void> logout(HttpServletRequest request, HttpServletResponse response) {
+
+        // 쿠키에서 Refresh Token 꺼내기
+        Cookie[] cookies = request.getCookies();
+        if (cookies != null) {
+            Arrays.stream(cookies)
+                    .filter(c -> c.getName().equals("refresh_token"))
+                    .findFirst()
+                    .ifPresent(c -> {
+                        // Redis에서 Refresh Token 삭제
+                        UUID userId = jwtProvider.extractUserId(c.getValue());
+                        refreshTokenRepository.delete(userId);
+                    });
+        }
+
+        ResponseCookie expiredCookie = ResponseCookie.from("refresh_token", "")
+                .httpOnly(true)
+                .secure(true)
+                .sameSite("None")
+                .path("/")
+                .maxAge(0)
+                .build();
+        response.addHeader(HttpHeaders.SET_COOKIE, expiredCookie.toString());
+
+        return ApiResponse.ok(null);
+    }
+}

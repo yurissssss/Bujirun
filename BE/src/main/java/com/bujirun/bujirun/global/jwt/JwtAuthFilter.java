@@ -1,0 +1,73 @@
+package com.bujirun.bujirun.global.jwt;
+
+import jakarta.servlet.FilterChain;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import lombok.RequiredArgsConstructor;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.stereotype.Component;
+import org.springframework.web.filter.OncePerRequestFilter;
+
+import java.io.IOException;
+import java.util.Collections;
+import java.util.UUID;
+
+@Component
+@RequiredArgsConstructor
+public class JwtAuthFilter extends OncePerRequestFilter {
+
+    private final JwtProvider jwtProvider;
+
+    @Override
+    protected void doFilterInternal(HttpServletRequest request,
+                                    HttpServletResponse response,
+                                    FilterChain filterChain) throws ServletException, IOException {
+
+        String token = resolveToken(request);
+
+        if (token != null && jwtProvider.validateToken(token)) {
+            // 1. 토큰에서 UUID 형태의 userId 추출
+            UUID userId = jwtProvider.extractUserId(token);
+
+            // 2. 인증 객체 생성
+            // 여기서 userId를 Principal로 넣습니다.
+            UsernamePasswordAuthenticationToken auth = new UsernamePasswordAuthenticationToken(
+                    userId,
+                    null,
+                    Collections.emptyList() // 권한이 필요하면 여기에 추가
+            );
+
+            // 3. SecurityContext에 저장
+            SecurityContextHolder.getContext().setAuthentication(auth);
+        }
+
+        filterChain.doFilter(request, response);
+    }
+
+    // OncePerRequestFilter 기본값(true)이면 async dispatch 시 필터가 재실행되지 않아
+    // Mono를 반환하는 컨트롤러(WebAsyncManager가 별도 스레드에서 async dispatch)에서
+    // SecurityContext가 유실되어 403이 발생한다.
+    @Override
+    protected boolean shouldNotFilterAsyncDispatch() {
+        return false;
+    }
+
+    // OncePerRequestFilter 기본값(true)이면 컨트롤러에서 매핑 안 된 예외가 터져
+    // Spring Boot가 내부적으로 /error로 forward할 때 이 필터가 재실행되지 않는다.
+    // 그 결과 인증 정보가 없는 요청으로 취급되어 원래 500 등으로 나가야 할 응답이
+    // SecurityConfig의 authenticationEntryPoint에 가로채여 엉뚱하게 401로 나간다.
+    @Override
+    protected boolean shouldNotFilterErrorDispatch() {
+        return false;
+    }
+
+    private String resolveToken(HttpServletRequest request) {
+        String bearer = request.getHeader("Authorization");
+        if (bearer != null && bearer.startsWith("Bearer ")) {
+            return bearer.substring(7);
+        }
+        return null;
+    }
+}

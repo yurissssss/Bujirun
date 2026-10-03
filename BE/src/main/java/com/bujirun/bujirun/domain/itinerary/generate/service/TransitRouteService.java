@@ -1,0 +1,240 @@
+package com.bujirun.bujirun.domain.itinerary.generate.service;
+
+import com.bujirun.bujirun.domain.itinerary.generate.client.OdsayClient;
+import com.bujirun.bujirun.domain.itinerary.generate.dto.response.SpotInfo;
+import com.bujirun.bujirun.domain.itinerary.generate.dto.response.SubPath;
+import com.bujirun.bujirun.domain.itinerary.generate.dto.response.TransitOption;
+import com.bujirun.bujirun.domain.itinerary.generate.dto.response.TransitRouteResponse;
+import com.bujirun.bujirun.global.util.GeoUtils;
+import com.bujirun.bujirun.global.util.TransitRouteUtils;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Service;
+
+import java.time.DayOfWeek;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.ZoneId;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
+
+@Slf4j
+@Service
+@RequiredArgsConstructor
+public class TransitRouteService {
+
+    private final OdsayClient odsayClient;
+    private final List<ArrivalInfoProvider> arrivalProviders;
+    private final TaxiFareEstimator taxiFareEstimator;
+    private final TransitOptionPrioritizer transitOptionPrioritizer;
+
+    private static final double WALK_SPEED_MPS = 1.2;       // 도보 속도 1.2m/s
+
+    private static final double ROAD_DISTANCE_FACTOR = 1.3;  // 차량용
+    private static final double WALK_DISTANCE_FACTOR = 1.4;  // 도보용 (골목/계단 등 우회 반영)
+
+    private static final ZoneId KST = ZoneId.of("Asia/Seoul");
+
+    // 택시 혼잡 배율 (KST 기준, 요일/시간대별로 소요시간에 적용)
+    private static final double WEEKDAY_RUSH_HOUR_FACTOR = 1.4; // 평일 07~09시, 18~20시
+    private static final double WEEKDAY_DAYTIME_FACTOR = 1.1;   // 평일 09~18시
+    private static final double WEEKDAY_NIGHT_FACTOR = 0.9;     // 평일 22~06시
+    private static final double WEEKEND_DAYTIME_FACTOR = 1.2;   // 토·일 11~19시
+
+    public List<TransitRouteResponse> getRoutesForDay(List<SpotInfo> spots, String optimizationType) {
+        return getRoutesForDay(spots, optimizationType, null);
+    }
+
+    /**
+     * travelAt: 택시 소요시간·요금을 계산할 기준 시각(이동 예정 시각). null이면 현재 시각.
+     * 일정 항목에 저장하는 값과 이동수단 옵션 API가 같은 기준 시각을 써야 둘이 일치한다.
+     */
+    public List<TransitRouteResponse> getRoutesForDay(List<SpotInfo> spots, String optimizationType,
+                                                      LocalDateTime travelAt) {
+        List<TransitRouteResponse> routes = new ArrayList<>();
+
+        Comparator<TransitOption> comparator = "TRANSFER_MIN".equals(optimizationType)
+                ? Comparator.comparingInt(TransitOption::transferCount)
+                : Comparator.comparingInt(TransitOption::totalTime);
+
+        for (int i = 0; i < spots.size() - 1; i++) {
+            SpotInfo from = spots.get(i);
+            SpotInfo to = spots.get(i + 1);
+            List<TransitOption> options = new ArrayList<>();
+
+            // 대중교통 — ODsay가 pathType별(지하철 전용/버스 전용/버스+지하철 조합)로 준 후보를
+            // 전부 옵션에 담는다. 구조적 정보는 캐시에서, 도착정보는 후보마다 매번 새로 enrich
+            List<TransitOption> transitOptions = List.of();
+            try {
+                transitOptions = odsayClient.searchTransitRoute(
+                        from.getLng(), from.getLat(),
+                        to.getLng(), to.getLat()
+                );
+
+                if (transitOptions.isEmpty()) {
+                    log.info("ODsay 경로 없음 — 재시도 {} → {}", from.getName(), to.getName());
+                    transitOptions = odsayClient.searchTransitRoute(
+                            from.getLng(), from.getLat(),
+                            to.getLng(), to.getLat()
+                    );
+                }
+
+                for (TransitOption transitOption : transitOptions) {
+                    options.add(enrichWithArrival(transitOption));
+                }
+            } catch (Exception e) {
+                log.warn("ODsay 경로 조회 실패 {} → {}: {}", from.getName(), to.getName(), e.getMessage());
+            }
+
+            // 도보 + 택시
+            double distanceM = GeoUtils.haversineDistance(from.getLat(), from.getLng(), to.getLat(), to.getLng());
+
+            // 도보 전용 여부 판단은 ODsay가 준 첫 번째(추천) 대중교통 후보만 대표로 확인한다
+            // 거리가 멀어 오래 걸리더라도 도보 옵션은 항상 후보에 포함한다
+            TransitOption representativeOption = transitOptions.isEmpty() ? null : transitOptions.get(0);
+            options.add(resolveWalkOption(distanceM, representativeOption)); // ODsay 도보 구간 sectionTime 재사용, 매칭 실패 시 calcWalk 폴백
+
+            options.add(calcTaxi(distanceM, travelAt));
+
+            options.sort(comparator);
+            routes.add(new TransitRouteResponse(options));
+        }
+
+        return routes;
+    }
+
+    /**
+     * 두 스팟 사이 구간의 이동수단 옵션을 인원수 기준 우선순위로 정렬해 돌려준다.
+     * 경로 조회는 getRoutesForDay(캐시 사용)를 그대로 쓰고, 인원수에 따라 달라지는 정렬·비용 계산은 캐시 바깥에서 한다.
+     */
+    public List<TransitOption> getPrioritizedOptions(SpotInfo from, SpotInfo to, int partySize,
+                                                     LocalDateTime travelAt) {
+        List<TransitRouteResponse> routes = getRoutesForDay(List.of(from, to), null, travelAt);
+        if (routes.isEmpty()) return List.of();
+
+        double distanceM = GeoUtils.haversineDistance(from.getLat(), from.getLng(), to.getLat(), to.getLng());
+        return transitOptionPrioritizer.prioritize(routes.get(0).options(), distanceM, partySize);
+    }
+
+    /**
+     * 하루 전체 구간을 한 번에 계산한 뒤(도착 시각이 아직 없어서 현재 시각 기준) 도착 시각이
+     * 정해지면, 택시 옵션만 구간별 이동 시각 기준으로 다시 계산한다.
+     * travelAts.get(i)는 i번째 구간(spots[i] → spots[i+1])의 기준 시각이다.
+     * 옵션 순서는 그대로 둔다 — 이미 옵션 순서로 고른 구간과 도착 시각이 바뀌지 않게 하기 위함.
+     */
+    public List<TransitRouteResponse> retimeTaxiOptions(List<SpotInfo> spots, List<TransitRouteResponse> routes,
+                                                        List<LocalDateTime> travelAts) {
+        List<TransitRouteResponse> result = new ArrayList<>(routes.size());
+        for (int i = 0; i < routes.size(); i++) {
+            SpotInfo from = spots.get(i);
+            SpotInfo to = spots.get(i + 1);
+            LocalDateTime travelAt = travelAts.get(i);
+            List<TransitOption> options = routes.get(i).options().stream()
+                    .map(opt -> "택시".equals(opt.type()) ? estimateTaxi(from, to, travelAt) : opt)
+                    .toList();
+            result.add(new TransitRouteResponse(options));
+        }
+        return result;
+    }
+
+    // 택시 옵션만 따로 계산한다 — ODsay·실시간 도착정보 조회 없이 거리와 기준 시각만으로 정해지므로,
+    // 도착 시각만 바뀐 구간의 택시 소요시간을 가볍게 다시 맞출 때 쓴다
+    public TransitOption estimateTaxi(SpotInfo from, SpotInfo to, LocalDateTime travelAt) {
+        double distanceM = GeoUtils.haversineDistance(from.getLat(), from.getLng(), to.getLat(), to.getLng());
+        return calcTaxi(distanceM, travelAt);
+    }
+
+    // 일정 날짜 + 도착 예정 시각을 택시 계산 기준 시각으로 바꾼다. 시각이 없으면 null(= 현재 시각 기준),
+    // 날짜만 없으면(과거 date 미저장 데이터) 오늘 날짜로 본다.
+    public static LocalDateTime toTravelAt(LocalDate date, LocalTime arrivalTime) {
+        if (arrivalTime == null) return null;
+        return (date != null ? date : LocalDate.now(KST)).atTime(arrivalTime);
+    }
+
+    /**
+     * 캐시된(혹은 방금 조회한) TransitOption의 subPath들에 실시간 도착정보(remainMinutes)를 채운다.
+     * 캐시 히트 여부와 무관하게 항상 새로 조회 — 도착정보는 절대 캐싱 대상이 아님.
+     */
+    private TransitOption enrichWithArrival(TransitOption option) {
+        List<SubPath> enriched = option.subPaths().stream().map(sp -> {
+            if ("도보".equals(sp.type())) return sp;
+            Integer remain = arrivalProviders.stream()
+                    .filter(p -> p.supports(sp.type()))
+                    .findFirst()
+                    .map(p -> p.getNextArrival(sp))
+                    .orElse(null);
+            return new SubPath(
+                    sp.type(), sp.sectionTime(), sp.routeNo(), sp.stationCount(),
+                    sp.startName(), sp.endName(),
+                    sp.startX(), sp.startY(), sp.endX(), sp.endY(),
+                    sp.startArsId(), sp.startId(), sp.wayCode(),
+                    remain, sp.distance()
+            );
+        }).toList();
+
+        return new TransitOption(
+                option.type(), option.totalTime(), option.totalFare(),
+                option.transferCount(), option.estimated(),
+                enriched
+        );
+    }
+
+    private TransitOption calcWalk(double distanceM) {
+        double walkDistanceM = distanceM * WALK_DISTANCE_FACTOR;
+        int timeMin = (int) Math.ceil(walkDistanceM / WALK_SPEED_MPS / 60);
+        return new TransitOption("도보", timeMin, 0, 0, true, List.of());
+    }
+
+    // ODsay 응답이 전 구간 도보(trafficType 3)로만 구성된 경우 그 sectionTime 합을
+    // 도보 소요시간으로 재사용한다. ODsay 응답이 없거나 도보 전용 매칭이 아니면 calcWalk()로 폴백
+    private TransitOption resolveWalkOption(double distanceM, TransitOption transitOption) {
+        List<SubPath> subPaths = transitOption != null ? transitOption.subPaths() : List.of();
+        boolean isWalkOnlyRoute = !subPaths.isEmpty()
+                && TransitRouteUtils.findFirstTransitSubPath(subPaths) == null;
+
+        if (isWalkOnlyRoute) {
+            int sectionTimeSum = subPaths.stream().mapToInt(SubPath::sectionTime).sum();
+            return new TransitOption("도보", sectionTimeSum, 0, 0, false, subPaths);
+        }
+
+        return calcWalk(distanceM); // ODsay 매칭 실패 시 기존 계산식으로 폴백
+    }
+
+    // travelAt: 이동 예정 시각. null이면 현재 시각 기준
+    private TransitOption calcTaxi(double distanceM, LocalDateTime travelAt) {
+        double roadDistanceM = distanceM * ROAD_DISTANCE_FACTOR;
+        LocalDateTime at = travelAt != null ? travelAt : LocalDateTime.now(KST);
+
+        int fare = taxiFareEstimator.estimate(roadDistanceM, at);
+        int timeMin = (int) Math.ceil(roadDistanceM / 1000 / 30 * 60);
+        timeMin = (int) Math.ceil(timeMin * resolveCongestionFactor(at));
+
+        return new TransitOption("택시", timeMin, fare, 0, true, List.of());
+    }
+
+    // KST 기준 요일/시간대별 택시 혼잡 배율
+    // 정체 구간엔 실제로 더 걸리고, 심야엔 기본 근사식보다 빠르다고 가정
+    private double resolveCongestionFactor(LocalDateTime now) {
+        DayOfWeek day = now.getDayOfWeek();
+        int hour = now.getHour();
+        boolean isWeekend = day == DayOfWeek.SATURDAY || day == DayOfWeek.SUNDAY;
+
+        if (isWeekend) {
+            return (hour >= 11 && hour < 19) ? WEEKEND_DAYTIME_FACTOR : 1.0;
+        }
+
+        if ((hour >= 7 && hour < 9) || (hour >= 18 && hour < 20)) {
+            return WEEKDAY_RUSH_HOUR_FACTOR;
+        }
+        if (hour >= 9 && hour < 18) {
+            return WEEKDAY_DAYTIME_FACTOR;
+        }
+        if (hour >= 22 || hour < 6) {
+            return WEEKDAY_NIGHT_FACTOR;
+        }
+        return 1.0;
+    }
+
+}

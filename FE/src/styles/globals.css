@@ -1,0 +1,217 @@
+@import "tailwindcss";
+
+@theme inline {
+  /* Main */
+  --color-main-blue: #97c1ff;
+  --color-main-white: #ffffff;
+
+  /* Sub */
+  --color-sub-deepblue: #4da6ff;
+  --color-sub-lightblue: #c6ddff;
+  --color-sub-darkblue: #6f9ee5;
+  --color-sub-pink: #ffb3c7;
+  --color-sub-green: #cde9b1;
+  --color-sub-violet: #cab6ff;
+  --color-sub-coral: #ff7f50;
+  --color-sub-lightcoral: #ffe5dc;
+  --color-sub-gray: #999999;
+  --color-sub-deepgray: #777777;
+  --color-sub-darkgray: #888888;
+  --color-sub-lightgray: #d9d9d9;
+
+  /* Text */
+  --color-text-primary: #1e293b;
+  --color-text-heading: #0f172a;
+
+  /* Receipt */
+  --color-receipt-bg: #fbf7ef;
+  --color-text-receipt-main: #000000;
+  --color-text-receipt-sub: #6b6b6b;
+
+  /* System */
+  --color-system-whitebg: rgba(255, 255, 255, 0.4);
+  --color-system-blackbg: rgba(0, 0, 0, 0.4);
+  --color-system-black: #000000;
+  --color-system-coralbg: #fff2ed;
+  --color-system-navbg: #ecf5ff;
+  --color-system-scroll: #d5e6ff;
+  --color-system-searchbg: #f2f5fa;
+  --color-system-selected: #e8f3ff;
+  --color-system-divider: #eeeeee;
+  --color-system-glassfrom: rgba(255, 255, 255, 0.52);
+  --color-system-glassto: rgba(234, 244, 255, 0.39);
+  --color-system-glassborder: rgba(151, 193, 255, 0.2);
+
+  /* Transport */
+  --color-transport-taxi: #9b89d1;
+
+  /* Category */
+  --color-category-sea: rgba(151, 193, 255, 0.5);
+  --color-category-nature: rgba(205, 233, 177, 0.65);
+  --color-category-culture: rgba(255, 179, 199, 0.5);
+  --color-category-experience: rgba(202, 182, 255, 0.5);
+
+  /* Toast */
+  --color-toast-success: #0f9d58;
+  --color-toastbg-success: #e7f5ee;
+  --color-toast-error: #db4437;
+  --color-toastbg-error: #fbeceb;
+  --color-toast-warning: #f4b400;
+  --color-toastbg-warning: #fef7e5;
+  --color-toast-default: #999999;
+  --color-toastbg-default: #f5f5f5;
+  --color-toast-itinerary: #4285f4;
+  --color-toastbg-itinerary: #ecf3fe;
+
+  /* Collection */
+  --color-collection-bg: #fffcf3;
+  --color-collection-border: #000000;
+  --color-collection-lever: #d9d9d9;
+  --color-collection-shelf: #fede7e;
+  --color-collection-indicator: #ff9300;
+  --color-collection-shadow: #646464;
+  --shadow-collection-button: 2px 2px 0 var(--color-collection-shadow);
+  --shadow-collection-button-active: 1px 1px 0 var(--color-collection-shadow);
+
+  --color-collection-all: #fede7e;
+  --color-collection-all-light: #fef8e4;
+  --color-collection-sea: #97c1ff;
+  --color-collection-sea-light: #eaf2fe;
+  --color-collection-nature: #cde9b1;
+  --color-collection-nature-light: #eef7e4;
+  --color-collection-culture: #ffb3c7;
+  --color-collection-culture-light: #fff0f4;
+  --color-collection-experience: #cab6ff;
+  --color-collection-experience-light: #f5f0ff;
+
+  /* Font Size */
+  --text-3xs: 9px;
+  --text-2xs: 10px;
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-md: 14px;
+  --text-lg: 16px;
+  --text-xl: 18px;
+  --text-2xl: 20px;
+  --text-3xl: 24px;
+
+  /* Spacing */
+  --spacing-screen-x: 24px;
+  --spacing-card-inner: 18px;
+  --font-giants: var(--font-giants-local), sans-serif;
+  --font-paperlogy: var(--font-paperlogy-local), sans-serif;
+  --font-ssurround: var(--font-ssurround-local), sans-serif;
+  --font-proup: var(--font-proup-local), sans-serif;
+  --font-laundrygothic: var(--font-laundrygothic-local), sans-serif;
+  --font-courierprime: var(--font-courierprime-local), monospace;
+  --font-dxsubtitles: var(--font-dxsubtitles-local), sans-serif;
+  --font-mona: var(--font-mona-local), sans-serif;
+}
+
+/* SVG 아이콘 색상 필터 유틸리티 */
+@utility icon-deepblue {
+  filter: brightness(0) saturate(100%) invert(60%) sepia(95%) saturate(476%) hue-rotate(185deg)
+    brightness(104%) contrast(101%);
+}
+
+@keyframes skeleton-shimmer {
+  100% {
+    transform: translateX(100%);
+  }
+}
+@utility icon-pink {
+  filter: brightness(0) saturate(100%) invert(79%) sepia(40%) saturate(850%) hue-rotate(297deg)
+    brightness(102%) contrast(101%);
+}
+@utility icon-coral {
+  filter: brightness(0) saturate(100%) invert(62%) sepia(57%) saturate(1030%) hue-rotate(333deg)
+    brightness(101%) contrast(98%);
+}
+@utility icon-gray {
+  filter: brightness(0) saturate(100%) invert(63%) sepia(0%) saturate(17%) hue-rotate(326deg)
+    brightness(96%) contrast(90%);
+}
+@utility icon-darkgray {
+  filter: brightness(0) saturate(100%) invert(55%) sepia(0%) saturate(0%) hue-rotate(0deg)
+    brightness(100%) contrast(90%);
+}
+@utility icon-main-blue {
+  filter: brightness(0) saturate(100%) invert(76%) sepia(30%) saturate(600%) hue-rotate(196deg)
+    brightness(109%) contrast(100%);
+}
+@utility icon-lightblue {
+  filter: brightness(0) saturate(100%) invert(93%) sepia(10%) saturate(400%) hue-rotate(200deg)
+    brightness(104%) contrast(99%);
+}
+@utility icon-green {
+  filter: brightness(0) saturate(100%) invert(92%) sepia(18%) saturate(380%) hue-rotate(70deg)
+    brightness(105%) contrast(98%);
+}
+@utility icon-violet {
+  filter: brightness(0) saturate(100%) invert(84%) sepia(20%) saturate(520%) hue-rotate(240deg)
+    brightness(105%) contrast(99%);
+}
+@utility icon-lightgray {
+  filter: brightness(0) saturate(100%) invert(90%) sepia(0%) saturate(0%) hue-rotate(0deg)
+    brightness(100%) contrast(95%);
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@utility animate-fade-in {
+  animation: fade-in 0.25s ease-out;
+}
+
+@keyframes spin-border {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@utility animate-spin-border {
+  animation: spin-border 1.8s linear infinite;
+}
+
+*,
+*::before,
+*::after {
+  line-height: 1.2;
+}
+
+img {
+  -webkit-user-drag: none;
+  user-select: none;
+}
+
+html,
+body {
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+body {
+  background: var(--color-main-white);
+  color: var(--color-text-primary);
+  font-family: var(--font-paperlogy-local), sans-serif;
+}
+
+* {
+  scrollbar-width: none;
+}
+
+*::-webkit-scrollbar {
+  display: none;
+}
+
+button,
+a {
+  -webkit-tap-highlight-color: transparent;
+  cursor: pointer;
+}

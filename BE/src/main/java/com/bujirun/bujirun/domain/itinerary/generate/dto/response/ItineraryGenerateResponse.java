@@ -1,0 +1,33 @@
+package com.bujirun.bujirun.domain.itinerary.generate.dto.response;
+
+import lombok.Builder;
+import lombok.Getter;
+
+import java.util.List;
+
+@Getter
+@Builder(toBuilder = true)
+public class ItineraryGenerateResponse {
+
+    private PlanOption planA; // 취향 집중형
+    private PlanOption planB; // 균형 최적형
+    private PlanOption planC; // 자유 편집형
+
+    @Getter
+    @Builder(toBuilder = true)
+    public static class PlanOption {
+        private String type;        // "A" | "B" | "C"
+        private String label;       // "취향 집중형" 등
+        private String description; // 한 줄 설명
+        private String summaryReason; // 추가: 그룹 일정 생성 시에만 채워지는 플랜 추천 이유 한 줄 요약 (개인 일정은 항상 null)
+        private List<DayPlan> days;
+    }
+
+    @Getter
+    @Builder(toBuilder = true)
+    public static class DayPlan {
+        private int day;
+        private List<SpotInfo> spots;
+        private List<TransitRouteResponse> routes; // 구간별 이동 정보 (spots[0]→spots[1], spots[1]→spots[2] ...)
+    }
+}

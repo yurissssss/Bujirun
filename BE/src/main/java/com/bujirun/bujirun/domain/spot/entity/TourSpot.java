@@ -1,0 +1,149 @@
+package com.bujirun.bujirun.domain.spot.entity;
+
+import jakarta.persistence.*;
+import lombok.*;
+
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+import java.util.UUID;
+
+@Entity
+@Table(name = "tour_spots")
+@Getter
+@NoArgsConstructor(access = AccessLevel.PROTECTED)
+@AllArgsConstructor
+@Builder
+public class TourSpot {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.UUID)
+    private UUID id;
+
+    @Column(name = "content_id", nullable = false, unique = true)
+    private String contentId;
+
+    @Column(nullable = false)
+    private String name;
+
+    private String category;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "sigungu_id")
+    private Sigungu sigungu;
+
+    @Column(precision = 10, scale = 7)
+    private BigDecimal lat;
+
+    @Column(precision = 10, scale = 7)
+    private BigDecimal lng;
+
+    private String address;
+
+    @Column(name = "thumbnail_url")
+    private String thumbnailUrl;
+
+    @Column(name = "operating_hours")
+    private String operatingHours;
+
+    @Column(name = "synced_at", nullable = false)
+    private LocalDateTime syncedAt;
+
+    @Column(name = "is_collection", nullable = false)
+    @Builder.Default
+    private boolean collection = false;
+
+    @Column(name = "collection_category")
+    private String collectionCategory;
+
+    // 전체 관광지(도감 포함) 공통 4분류(바다/자연/문화/체험). 도감 60개는 collectionCategory와 동일한 값,
+    // 나머지는 AI(gpt-4.1-mini) 보조 분류로 채움. TourAPI cat1 기반 category(6분류)와는 값 체계가 다름
+    @Column(name = "spot_category")
+    private String spotCategory;
+
+    // 스와이프 덱(/api/collections/swipe-deck) 전용 큐레이션 이미지. thumbnail_url(API 동기화 값)과 별개로 관리됨
+    @Column(name = "swipe_image_url", length = 500)
+    private String swipeImageUrl;
+
+    // ── 부산광역시_부산명소정보 API(data.go.kr 15063481) 보완 정보 ──
+    private String subtitle;
+
+    @Column(columnDefinition = "TEXT")
+    private String description;
+
+    private String contact;
+
+    @Column(name = "homepage_url")
+    private String homepageUrl;
+
+    private String transportation;
+
+    @Column(name = "closed_days")
+    private String closedDays;
+
+    @Column(name = "fee_info")
+    private String feeInfo;
+
+    // 부산명소정보 API의 콘텐츠ID(UC_SEQ). 좌표 매칭 후 재동기화 시 바로 찾기 위한 용도
+    @Column(name = "busan_uc_seq")
+    private String busanUcSeq;
+
+    // TourAPI 자체 개요(overview)로 채워진 description을 OpenAI로 재요약한 결과. 부산명소정보와 달리
+    // 원문 description은 보존하고 이 컬럼에 별도 저장(화면은 이 값이 있으면 이걸 우선 노출)
+    @Column(name = "summary_description", columnDefinition = "TEXT")
+    private String summaryDescription;
+
+    // 부산명소정보 API(공식 관광지)에 좌표·명칭이 매칭되는 도감 스팟 여부.
+    // 일정 생성 프롬프트에서 취향 편중 보완용 tie-breaker로 사용
+    @Column(name = "is_official_recommended", nullable = false)
+    @Builder.Default
+    private boolean officialRecommended = false;
+
+    @PrePersist
+    public void prePersist() {
+        this.syncedAt = LocalDateTime.now();
+    }
+
+    public void update(String name, String category, Sigungu sigungu,
+                       BigDecimal lat, BigDecimal lng, String address,
+                       String thumbnailUrl, String operatingHours) {
+        this.name           = name;
+        this.category       = category;
+        this.sigungu        = sigungu;
+        this.lat            = lat;
+        this.lng            = lng;
+        this.address        = address;
+        this.thumbnailUrl   = thumbnailUrl;
+        this.operatingHours = operatingHours;
+        this.syncedAt       = LocalDateTime.now();
+    }
+
+    // 부산명소정보 API로 소개정보 보완. operatingHours는 TourAPI 값이 이미 있으면 덮어쓰지 않음
+    public void enrichFromBusanAttraction(String busanUcSeq, String subtitle, String description,
+                                           String contact, String homepageUrl, String transportation,
+                                           String operatingHoursIfBlank, String closedDays, String feeInfo) {
+        this.busanUcSeq      = busanUcSeq;
+        this.subtitle        = subtitle;
+        this.description     = description;
+        this.contact         = contact;
+        this.homepageUrl     = homepageUrl;
+        this.transportation  = transportation;
+        this.closedDays      = closedDays;
+        this.feeInfo         = feeInfo;
+        if (this.operatingHours == null || this.operatingHours.isBlank()) {
+            this.operatingHours = operatingHoursIfBlank;
+        }
+    }
+
+    public void updateDescription(String description) {
+        this.description = description;
+    }
+
+    public void updateSummaryDescription(String summaryDescription) {
+        this.summaryDescription = summaryDescription;
+    }
+
+    // 부산명소정보 API 좌표·명칭 매칭 배치에서 공식 관광지로 확인된 경우 호출
+    public void markOfficialRecommended() {
+        this.officialRecommended = true;
+    }
+}

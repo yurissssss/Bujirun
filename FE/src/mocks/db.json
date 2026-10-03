@@ -1,0 +1,589 @@
+{
+  "places": [
+    {
+      "id": "550e8400-e29b-41d4-a716-446655440000",
+      "contentId": "126078",
+      "name": "광안리해수욕장",
+      "category": "자연·공원",
+      "sigungu": "수영구",
+      "lat": 35.1538131,
+      "lng": 129.1185478,
+      "address": "부산광역시 수영구 광안해변로 219",
+      "thumbnailUrl": "http://tong.visitkorea.or.kr/cms/resource/45/3311245_image2_1.jpg",
+      "operatingHours": "상시 개방",
+      "isCollected": true
+    },
+    {
+      "id": "550e8400-e29b-41d4-a716-446655440001",
+      "contentId": "987810",
+      "name": "해운대 동백섬",
+      "category": "자연·공원",
+      "sigungu": "해운대구",
+      "lat": 35.1539914,
+      "lng": 129.152181,
+      "address": "부산광역시 해운대구 동백로 67",
+      "thumbnailUrl": "http://tong.visitkorea.or.kr/cms/resource/47/3350847_image2_1.jpg",
+      "operatingHours": "상시 개방",
+      "isCollected": false
+    },
+    {
+      "id": "550e8400-e29b-41d4-a716-446655440002",
+      "contentId": "2606221",
+      "name": "영도 흰여울해안터널",
+      "category": "역사·문화",
+      "sigungu": "영도구",
+      "lat": 35.0779591,
+      "lng": 129.0453201,
+      "address": "부산광역시 영도구 영선동4가 1044-6",
+      "thumbnailUrl": "",
+      "operatingHours": "상시 개방",
+      "isCollected": false
+    },
+    {
+      "id": "550e8400-e29b-41d4-a716-446655440003",
+      "contentId": "2607943",
+      "name": "청사포 다릿돌전망대",
+      "category": "역사·문화",
+      "sigungu": "해운대구",
+      "lat": 35.1633523,
+      "lng": 129.1954075,
+      "address": "부산광역시 해운대구 청사포로 167",
+      "thumbnailUrl": "http://tong.visitkorea.or.kr/cms/resource/96/2941196_image2_1.bmp",
+      "operatingHours": "09:00~22:00",
+      "isCollected": true
+    },
+    {
+      "id": "550e8400-e29b-41d4-a716-446655440004",
+      "contentId": "2456767",
+      "name": "F1963",
+      "category": "역사·문화",
+      "sigungu": "수영구",
+      "lat": 35.1767854,
+      "lng": 129.1155141,
+      "address": "부산광역시 수영구 구락로123번길 20",
+      "thumbnailUrl": "http://tong.visitkorea.or.kr/cms/resource/61/3350961_image2_1.jpg",
+      "operatingHours": "09:00~24:00",
+      "isCollected": false
+    },
+    {
+      "id": "550e8400-e29b-41d4-a716-446655440005",
+      "contentId": "252561",
+      "name": "절영해안산책로",
+      "category": "자연·공원",
+      "sigungu": "영도구",
+      "lat": 35.0812475,
+      "lng": 129.0411871,
+      "address": "부산광역시 영도구 해안산책길 52",
+      "thumbnailUrl": "",
+      "operatingHours": "상시 개방",
+      "isCollected": false
+    },
+    {
+      "id": "550e8400-e29b-41d4-a716-446655440006",
+      "contentId": "2679008",
+      "name": "KT&G 상상마당 부산",
+      "category": "역사·문화",
+      "sigungu": "부산진구",
+      "lat": 35.1543174,
+      "lng": 129.0573309,
+      "address": "부산광역시 부산진구 서면로 39",
+      "thumbnailUrl": "http://tong.visitkorea.or.kr/cms/resource/17/3541017_image2_1.jpg",
+      "operatingHours": "10:00~22:00",
+      "isCollected": true
+    },
+    {
+      "id": "550e8400-e29b-41d4-a716-446655440007",
+      "contentId": "2785289",
+      "name": "감지해변",
+      "category": "자연·공원",
+      "sigungu": "영도구",
+      "lat": 35.0625336,
+      "lng": 129.0764901,
+      "address": "부산광역시 영도구 감지길 110",
+      "thumbnailUrl": "",
+      "operatingHours": "상시",
+      "isCollected": false
+    },
+    {
+      "id": "550e8400-e29b-41d4-a716-446655440008",
+      "contentId": "126814",
+      "name": "25의용단",
+      "category": "역사·문화",
+      "sigungu": "수영구",
+      "lat": 35.1719498,
+      "lng": 129.1138921,
+      "address": "부산광역시 수영구 연수로379번길 42",
+      "thumbnailUrl": "",
+      "operatingHours": "상시 개방",
+      "isCollected": false
+    },
+    {
+      "id": "550e8400-e29b-41d4-a716-446655440009",
+      "contentId": "1942348",
+      "name": "관수옥과 초량왜관 터",
+      "category": "역사·문화",
+      "sigungu": "중구",
+      "lat": 35.1005397,
+      "lng": 129.0327484,
+      "address": "부산광역시 중구 용두산길 37-55",
+      "thumbnailUrl": "http://tong.visitkorea.or.kr/cms/resource/24/3049224_image2_1.JPG",
+      "operatingHours": "상시 개방",
+      "isCollected": false
+    },
+    {
+      "id": "550e8400-e29b-41d4-a716-446655440010",
+      "contentId": "128610",
+      "name": "공수어촌체험마을",
+      "category": "역사·문화",
+      "sigungu": "기장군",
+      "lat": 35.1844586,
+      "lng": 129.2111944,
+      "address": "부산광역시 기장군 기장읍 공수해안길 13-2",
+      "thumbnailUrl": "http://tong.visitkorea.or.kr/cms/resource/32/2504632_image2_1.jpg",
+      "operatingHours": "",
+      "isCollected": false
+    },
+    {
+      "id": "550e8400-e29b-41d4-a716-446655440011",
+      "contentId": "2710097",
+      "name": "부산현대미술관",
+      "category": "역사·문화",
+      "sigungu": "사하구",
+      "lat": 35.1092,
+      "lng": 128.9427,
+      "address": "부산광역시 사하구 낙동남로 1191",
+      "thumbnailUrl": "https://picsum.photos/seed/moca-busan/400/300",
+      "operatingHours": "10:00~18:00",
+      "isCollected": false
+    },
+    {
+      "id": "550e8400-e29b-41d4-a716-446655440012",
+      "contentId": "126298",
+      "name": "다대포해수욕장",
+      "category": "자연·공원",
+      "sigungu": "사하구",
+      "lat": 35.0475,
+      "lng": 128.9665,
+      "address": "부산광역시 사하구 다대동",
+      "thumbnailUrl": "https://picsum.photos/seed/dadaepo/400/300",
+      "operatingHours": "상시 개방",
+      "isCollected": true
+    },
+    {
+      "id": "550e8400-e29b-41d4-a716-446655440013",
+      "contentId": "264498",
+      "name": "부산시민공원",
+      "category": "자연·공원",
+      "sigungu": "부산진구",
+      "lat": 35.1687,
+      "lng": 129.0556,
+      "address": "부산광역시 부산진구 시민공원로 73",
+      "thumbnailUrl": "https://picsum.photos/seed/citizen-park/400/300",
+      "operatingHours": "05:00~24:00",
+      "isCollected": true
+    },
+    {
+      "id": "550e8400-e29b-41d4-a716-446655440014",
+      "contentId": "2750142",
+      "name": "기장시장",
+      "category": "음식·카페",
+      "sigungu": "기장군",
+      "lat": 35.2441,
+      "lng": 129.2142,
+      "address": "부산광역시 기장군 기장읍 차성동로67번길 18",
+      "thumbnailUrl": "https://picsum.photos/seed/gijang-market/400/300",
+      "operatingHours": "09:00~21:00",
+      "isCollected": false
+    },
+    {
+      "id": "550e8400-e29b-41d4-a716-446655440015",
+      "contentId": "3012310",
+      "name": "부산요트투어",
+      "category": "체험·레저",
+      "sigungu": "해운대구",
+      "lat": 35.154,
+      "lng": 129.1455,
+      "address": "부산광역시 해운대구 해운대해변로 84",
+      "thumbnailUrl": "https://picsum.photos/seed/yacht-tour/400/300",
+      "operatingHours": "10:00~22:00",
+      "isCollected": false
+    }
+  ],
+  "schedules": [
+    {
+      "id": "660e8400-e29b-41d4-a716-446655440000",
+      "title": "해운대 힐링 코스",
+      "planType": "A",
+      "status": "confirmed",
+      "createdAt": "2026-07-01T10:00:00",
+      "days": [
+        {
+          "id": "770e8400-e29b-41d4-a716-446655440000",
+          "dayNumber": 1,
+          "date": "2026-07-01",
+          "items": [
+            {
+              "id": "880e8400-e29b-41d4-a716-446655440000",
+              "spotId": "550e8400-e29b-41d4-a716-446655440003",
+              "spotName": "청사포 다릿돌전망대",
+              "orderIndex": 1,
+              "arrivalTime": "10:00",
+              "durationMin": 60,
+              "travelMode": "transit",
+              "travelTimeMin": 35,
+              "memo": null
+            },
+            {
+              "id": "880e8400-e29b-41d4-a716-446655440001",
+              "spotId": "550e8400-e29b-41d4-a716-446655440001",
+              "spotName": "해운대 동백섬",
+              "orderIndex": 2,
+              "arrivalTime": "11:30",
+              "durationMin": 90,
+              "travelMode": "transit",
+              "travelTimeMin": 32,
+              "memo": null
+            },
+            {
+              "id": "880e8400-e29b-41d4-a716-446655440002",
+              "spotId": "550e8400-e29b-41d4-a716-446655440000",
+              "spotName": "광안리해수욕장",
+              "orderIndex": 3,
+              "arrivalTime": "13:30",
+              "durationMin": 120,
+              "travelMode": "transit",
+              "travelTimeMin": 32,
+              "memo": null
+            }
+          ]
+        },
+        {
+          "id": "770e8400-e29b-41d4-a716-446655440001",
+          "dayNumber": 2,
+          "date": "2026-07-02",
+          "items": [
+            {
+              "id": "880e8400-e29b-41d4-a716-446655440003",
+              "spotId": "550e8400-e29b-41d4-a716-446655440002",
+              "spotName": "영도 흰여울해안터널",
+              "orderIndex": 1,
+              "arrivalTime": "10:00",
+              "durationMin": 60,
+              "travelMode": "transit",
+              "travelTimeMin": 25,
+              "memo": null
+            },
+            {
+              "id": "880e8400-e29b-41d4-a716-446655440004",
+              "spotId": "550e8400-e29b-41d4-a716-446655440005",
+              "spotName": "절영해안산책로",
+              "orderIndex": 2,
+              "arrivalTime": "11:30",
+              "durationMin": 90,
+              "travelMode": "walk",
+              "travelTimeMin": 8,
+              "memo": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "660e8400-e29b-41d4-a716-446655440001",
+      "title": "영도 감성 코스",
+      "planType": "B",
+      "status": "confirmed",
+      "createdAt": "2026-07-03T09:00:00",
+      "days": [
+        {
+          "id": "770e8400-e29b-41d4-a716-446655440002",
+          "dayNumber": 1,
+          "date": "2026-07-03",
+          "items": [
+            {
+              "id": "880e8400-e29b-41d4-a716-446655440005",
+              "spotId": "550e8400-e29b-41d4-a716-446655440002",
+              "spotName": "영도 흰여울해안터널",
+              "orderIndex": 1,
+              "arrivalTime": "10:00",
+              "durationMin": 60,
+              "travelMode": "transit",
+              "travelTimeMin": 20,
+              "memo": null
+            },
+            {
+              "id": "880e8400-e29b-41d4-a716-446655440006",
+              "spotId": "550e8400-e29b-41d4-a716-446655440007",
+              "spotName": "감지해변",
+              "orderIndex": 2,
+              "arrivalTime": "11:30",
+              "durationMin": 90,
+              "travelMode": "taxi",
+              "travelTimeMin": 12,
+              "memo": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "660e8400-e29b-41d4-a716-446655440002",
+      "title": "서면 문화 탐방",
+      "planType": "C",
+      "status": "draft",
+      "createdAt": "2026-07-05T14:00:00",
+      "days": [
+        {
+          "id": "770e8400-e29b-41d4-a716-446655440003",
+          "dayNumber": 1,
+          "date": "2026-07-05",
+          "items": [
+            {
+              "id": "880e8400-e29b-41d4-a716-446655440007",
+              "spotId": "550e8400-e29b-41d4-a716-446655440006",
+              "spotName": "KT&G 상상마당 부산",
+              "orderIndex": 1,
+              "arrivalTime": "13:00",
+              "durationMin": 120,
+              "travelMode": "transit",
+              "travelTimeMin": 15,
+              "memo": "전시 확인 필요"
+            },
+            {
+              "id": "880e8400-e29b-41d4-a716-446655440008",
+              "spotId": "550e8400-e29b-41d4-a716-446655440004",
+              "spotName": "F1963",
+              "orderIndex": 2,
+              "arrivalTime": "15:30",
+              "durationMin": 90,
+              "travelMode": "taxi",
+              "travelTimeMin": 12,
+              "memo": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "660e8400-e29b-41d4-a716-446655440003",
+      "title": "다대포 노을 코스",
+      "planType": "A",
+      "status": "confirmed",
+      "createdAt": "2026-07-08T11:00:00",
+      "days": [
+        {
+          "id": "770e8400-e29b-41d4-a716-446655440004",
+          "dayNumber": 1,
+          "date": "2026-07-08",
+          "items": [
+            {
+              "id": "880e8400-e29b-41d4-a716-446655440009",
+              "spotId": "550e8400-e29b-41d4-a716-446655440011",
+              "spotName": "부산현대미술관",
+              "orderIndex": 1,
+              "arrivalTime": "11:00",
+              "durationMin": 90,
+              "travelMode": "transit",
+              "travelTimeMin": 30,
+              "memo": "전시 관람"
+            },
+            {
+              "id": "880e8400-e29b-41d4-a716-446655440010",
+              "spotId": "550e8400-e29b-41d4-a716-446655440012",
+              "spotName": "다대포해수욕장",
+              "orderIndex": 2,
+              "arrivalTime": "15:00",
+              "durationMin": 150,
+              "travelMode": "bus",
+              "travelTimeMin": 35,
+              "memo": "노을 시간 맞추기"
+            }
+          ]
+        },
+        {
+          "id": "770e8400-e29b-41d4-a716-446655440005",
+          "dayNumber": 2,
+          "date": "2026-07-09",
+          "items": [
+            {
+              "id": "880e8400-e29b-41d4-a716-446655440011",
+              "spotId": "550e8400-e29b-41d4-a716-446655440005",
+              "spotName": "절영해안산책로",
+              "orderIndex": 1,
+              "arrivalTime": "10:30",
+              "durationMin": 80,
+              "travelMode": "transit",
+              "travelTimeMin": 42,
+              "memo": null
+            },
+            {
+              "id": "880e8400-e29b-41d4-a716-446655440012",
+              "spotId": "550e8400-e29b-41d4-a716-446655440002",
+              "spotName": "영도 흰여울해안터널",
+              "orderIndex": 2,
+              "arrivalTime": "13:00",
+              "durationMin": 100,
+              "travelMode": "walk",
+              "travelTimeMin": 12,
+              "memo": "사진 스팟"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "660e8400-e29b-41d4-a716-446655440004",
+      "title": "기장 먹방 드라이브",
+      "planType": "B",
+      "status": "confirmed",
+      "createdAt": "2026-07-12T10:30:00",
+      "days": [
+        {
+          "id": "770e8400-e29b-41d4-a716-446655440006",
+          "dayNumber": 1,
+          "date": "2026-07-12",
+          "items": [
+            {
+              "id": "880e8400-e29b-41d4-a716-446655440013",
+              "spotId": "550e8400-e29b-41d4-a716-446655440014",
+              "spotName": "기장시장",
+              "orderIndex": 1,
+              "arrivalTime": "10:30",
+              "durationMin": 90,
+              "travelMode": "transit",
+              "travelTimeMin": 45,
+              "memo": "점심 해산물"
+            },
+            {
+              "id": "880e8400-e29b-41d4-a716-446655440014",
+              "spotId": "550e8400-e29b-41d4-a716-446655440010",
+              "spotName": "공수어촌체험마을",
+              "orderIndex": 2,
+              "arrivalTime": "13:30",
+              "durationMin": 120,
+              "travelMode": "taxi",
+              "travelTimeMin": 15,
+              "memo": "체험 예약 확인"
+            },
+            {
+              "id": "880e8400-e29b-41d4-a716-446655440015",
+              "spotId": "550e8400-e29b-41d4-a716-446655440015",
+              "spotName": "부산요트투어",
+              "orderIndex": 3,
+              "arrivalTime": "19:00",
+              "durationMin": 90,
+              "travelMode": "taxi",
+              "travelTimeMin": 35,
+              "memo": "야경 투어"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "logs": [
+    {
+      "id": "990e8400-e29b-41d4-a716-446655440000",
+      "userId": "aa0e8400-e29b-41d4-a716-446655440000",
+      "itineraryId": "660e8400-e29b-41d4-a716-446655440000",
+      "title": "해운대에서 광안리까지, 여름 부산",
+      "shared": true,
+      "likesCount": 24,
+      "createdAt": "2026-07-02T18:00:00",
+      "updatedAt": "2026-07-02T18:00:00"
+    },
+    {
+      "id": "990e8400-e29b-41d4-a716-446655440001",
+      "userId": "aa0e8400-e29b-41d4-a716-446655440000",
+      "itineraryId": "660e8400-e29b-41d4-a716-446655440001",
+      "title": "영도 반나절 감성 코스",
+      "shared": true,
+      "likesCount": 8,
+      "createdAt": "2026-07-04T12:00:00",
+      "updatedAt": "2026-07-04T12:00:00"
+    },
+    {
+      "id": "990e8400-e29b-41d4-a716-446655440002",
+      "userId": "aa0e8400-e29b-41d4-a716-446655440001",
+      "itineraryId": "660e8400-e29b-41d4-a716-446655440002",
+      "title": "서면 문화 탐방 기록",
+      "shared": false,
+      "likesCount": 0,
+      "createdAt": "2026-07-05T20:00:00",
+      "updatedAt": "2026-07-05T20:00:00"
+    },
+    {
+      "id": "990e8400-e29b-41d4-a716-446655440003",
+      "userId": "aa0e8400-e29b-41d4-a716-446655440001",
+      "itineraryId": "660e8400-e29b-41d4-a716-446655440000",
+      "title": "청사포 → 광안리 뚜벅이 여행",
+      "shared": true,
+      "likesCount": 15,
+      "createdAt": "2026-07-06T10:00:00",
+      "updatedAt": "2026-07-06T10:00:00"
+    },
+    {
+      "id": "990e8400-e29b-41d4-a716-446655440004",
+      "userId": "aa0e8400-e29b-41d4-a716-446655440002",
+      "itineraryId": "660e8400-e29b-41d4-a716-446655440001",
+      "title": "혼자 떠난 영도 여행",
+      "shared": true,
+      "likesCount": 3,
+      "createdAt": "2026-07-07T15:00:00",
+      "updatedAt": "2026-07-07T15:00:00"
+    },
+    {
+      "id": "990e8400-e29b-41d4-a716-446655440005",
+      "userId": "aa0e8400-e29b-41d4-a716-446655440000",
+      "itineraryId": "660e8400-e29b-41d4-a716-446655440003",
+      "title": "다대포 노을과 영도 산책",
+      "shared": true,
+      "likesCount": 32,
+      "createdAt": "2026-07-09T20:30:00",
+      "updatedAt": "2026-07-09T20:30:00"
+    },
+    {
+      "id": "990e8400-e29b-41d4-a716-446655440006",
+      "userId": "aa0e8400-e29b-41d4-a716-446655440002",
+      "itineraryId": "660e8400-e29b-41d4-a716-446655440004",
+      "title": "기장시장부터 요트 야경까지",
+      "shared": true,
+      "likesCount": 41,
+      "createdAt": "2026-07-12T22:00:00",
+      "updatedAt": "2026-07-12T22:00:00"
+    },
+    {
+      "id": "990e8400-e29b-41d4-a716-446655440007",
+      "userId": "aa0e8400-e29b-41d4-a716-446655440001",
+      "itineraryId": "660e8400-e29b-41d4-a716-446655440003",
+      "title": "부산현대미술관 당일 기록",
+      "shared": false,
+      "likesCount": 5,
+      "createdAt": "2026-07-10T12:00:00",
+      "updatedAt": "2026-07-10T12:00:00"
+    }
+  ],
+  "users": [
+    {
+      "id": "aa0e8400-e29b-41d4-a716-446655440000",
+      "nickname": "부지런한여행자",
+      "email": "test1@test.com",
+      "authProvider": "kakao",
+      "createdAt": "2026-06-01T10:00:00"
+    },
+    {
+      "id": "aa0e8400-e29b-41d4-a716-446655440001",
+      "nickname": "해운대단골",
+      "email": "test2@test.com",
+      "authProvider": "kakao",
+      "createdAt": "2026-06-05T14:00:00"
+    },
+    {
+      "id": "aa0e8400-e29b-41d4-a716-446655440002",
+      "nickname": "영도탐험가",
+      "email": "test3@test.com",
+      "authProvider": "kakao",
+      "createdAt": "2026-06-10T09:00:00"
+    }
+  ]
+}

@@ -1,0 +1,35 @@
+package com.bujirun.bujirun.domain.itinerary.optimize.dto.response;
+
+import com.bujirun.bujirun.domain.itinerary.generate.dto.response.TransitDetail;
+import com.bujirun.bujirun.domain.itinerary.generate.dto.response.TransitRouteResponse;
+import lombok.Builder;
+import lombok.Getter;
+
+import java.time.LocalTime;
+import java.util.List;
+
+@Getter
+@Builder
+public class ItineraryOptimizeResponse {
+    private List<OptimizedSpot> spots;
+    private List<TransitRouteResponse> routes;
+    private String reason; // "N번 관광지가 마감임박이라 순서를 앞당겼어요" 같은 한 줄 설명
+
+    @Getter
+    @Builder
+    public static class OptimizedSpot {
+        private String contentId;
+        private String name;
+        private int order;
+        private LocalTime arrivalTime;
+        private String travelMode;
+        private Integer travelTimeMin;
+        private Integer travelFare;
+        private String routeType;
+        private String routeNo;
+        private String startStationName;
+        private String endStationName;
+        private String startArsId;
+        private TransitDetail transitDetail; // subPath 배열 전체 (환승 2회 이상 등 대표값으로 못 담는 구간 상세). "예정" 정보, 실시간 아님
+    }
+}

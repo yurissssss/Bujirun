@@ -1,0 +1,524 @@
+package com.bujirun.bujirun.domain.spot.service;
+
+import com.bujirun.bujirun.domain.itinerary.generate.client.OpenAiClient;
+import com.bujirun.bujirun.domain.spot.client.BusanAttractionApiClient;
+import com.bujirun.bujirun.domain.spot.client.TourApiClient;
+import com.bujirun.bujirun.domain.spot.dto.response.BusanAttractionApiResponse;
+import com.bujirun.bujirun.domain.spot.dto.response.TourApiResponse.*;
+import com.bujirun.bujirun.domain.spot.entity.Sigungu;
+import com.bujirun.bujirun.domain.spot.entity.TourSpot;
+import com.bujirun.bujirun.domain.spot.repository.SigunguRepository;
+import com.bujirun.bujirun.domain.spot.repository.TourSpotRepository;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.annotation.Lazy;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
+import org.springframework.transaction.annotation.Transactional;
+
+import java.math.BigDecimal;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.UUID;
+
+@Slf4j
+@Service
+public class MigrationService {
+
+    private final TourApiClient             tourApiClient;
+    private final BusanAttractionApiClient  busanAttractionApiClient;
+    private final OpenAiClient              openAiClient;
+    private final TourSpotRepository        tourSpotRepository;
+    private final SigunguRepository         sigunguRepository;
+    // 항목 단위 재시도 격리를 위한 자가주입 프록시(@Lazy로 순환참조 회피) — enrichSingleBusanItem()을
+    // 이 프록시로 호출해야 REQUIRES_NEW가 실제로 새 트랜잭션을 열어준다(self-invocation은 프록시를 안 거침).
+    // @Lazy는 필드가 아니라 생성자 파라미터에 붙어야 실제로 적용된다(Lombok @RequiredArgsConstructor는
+    // 필드의 @Lazy를 생성자로 복사해주지 않음) — 그래서 @RequiredArgsConstructor 대신 생성자를 직접 작성함.
+    private final MigrationService self;
+
+    public MigrationService(TourApiClient tourApiClient,
+                             BusanAttractionApiClient busanAttractionApiClient,
+                             OpenAiClient openAiClient,
+                             TourSpotRepository tourSpotRepository,
+                             SigunguRepository sigunguRepository,
+                             @Lazy MigrationService self) {
+        this.tourApiClient = tourApiClient;
+        this.busanAttractionApiClient = busanAttractionApiClient;
+        this.openAiClient = openAiClient;
+        this.tourSpotRepository = tourSpotRepository;
+        this.sigunguRepository = sigunguRepository;
+        this.self = self;
+    }
+    private static final List<Integer> TARGET_CONTENT_TYPES = List.of(12, 14, 28,38); // 관광지, 문화시설, 레포츠, 시장
+    private static final double BUSAN_ATTRACTION_MATCH_RADIUS_KM = 0.1; // 100m 이내면 같은 관광지로 판단
+    private static final int    SUMMARIZE_MIN_LENGTH = 200; // 이보다 짧으면 이미 충분히 짧다고 보고 건너뜀
+
+    private static final String SUMMARIZE_SYSTEM_PROMPT = """
+            너는 부산 관광지 소개글을 다듬는 편집자야. 아래 원문을 자연스러운 한국어 2~3문장으로 요약해.
+            규칙:
+            - 원문에 없는 정보를 추가하지 마.
+            - 광고성 문구, 특수기호(★, ▶ 등), 중복된 줄바꿈은 제거해.
+            - 존댓말(합니다체)로 통일해.
+            - 요약문만 출력하고, 다른 설명이나 따옴표는 붙이지 마.
+            """;
+
+    private static final Map<Integer, String> CATEGORY_MAP = Map.of(
+            12, "관광지",
+            14, "문화시설",
+            15, "행사",
+            25, "여행코스",
+            28, "레포츠",
+            32, "숙박",
+            38, "쇼핑",
+            39, "음식점"
+    );
+
+    private static final Map<String, String> SIGUNGU_MAP = Map.ofEntries(
+            Map.entry("1",  "중구"),
+            Map.entry("2",  "서구"),
+            Map.entry("3",  "동구"),
+            Map.entry("4",  "영도구"),
+            Map.entry("5",  "부산진구"),
+            Map.entry("6",  "동래구"),
+            Map.entry("7",  "남구"),
+            Map.entry("8",  "북구"),
+            Map.entry("9",  "해운대구"),
+            Map.entry("10", "사하구"),
+            Map.entry("11", "금정구"),
+            Map.entry("12", "강서구"),
+            Map.entry("13", "연제구"),
+            Map.entry("14", "수영구"),
+            Map.entry("15", "사상구"),
+            Map.entry("16", "기장군")
+    );
+
+    @Transactional
+    public MigrationResult runFullMigration() {
+        log.info("========== 마이그레이션 시작 ==========");
+
+        initSigungu();
+
+        List<AreaListResponse.AreaItem> allItems = fetchAllPages();
+        log.info("총 수집: {}건", allItems.size());
+
+        int saved = 0, updated = 0, failed = 0;
+
+        for (AreaListResponse.AreaItem item : allItems) {
+            try {
+                boolean isNew = upsertSpot(item);
+                if (isNew) saved++; else updated++;
+                Thread.sleep(200);
+            } catch (Exception e) {
+                log.error("[Migration] 실패 - contentId={}, {}", item.getContentid(), e.getMessage());
+                failed++;
+            }
+        }
+
+        MigrationResult result = new MigrationResult(allItems.size(), saved, updated, failed);
+        log.info("========== 마이그레이션 완료: {} ==========", result);
+        return result;
+    }
+
+    // 부산광역시_부산명소정보 API(data.go.kr 15063481)로 소개정보(부제목·상세내용·교통정보·휴무일·이용요금) 보완.
+    // TourAPI는 contentId가 있어 정확히 매칭되지만 이 API는 contentId 체계가 달라서, 좌표 100m 반경 후보 중
+    // 관광지명까지 일치하는 것만 최종 매칭함 (좌표만으로는 반경 내 다른 관광지와 오매칭될 수 있어서 정확도를 위해 이중 체크).
+    @Transactional
+    public BusanEnrichResult enrichWithBusanAttractionApi() {
+        log.info("========== 부산명소정보 API 연동 시작 ==========");
+
+        List<BusanAttractionApiResponse> items = busanAttractionApiClient.fetchAll();
+        log.info("총 수집: {}건", items.size());
+
+        int matched = 0, unmatched = 0, failed = 0;
+
+        for (BusanAttractionApiResponse item : items) {
+            try {
+                if (self.enrichSingleBusanItem(item)) {
+                    matched++;
+                } else {
+                    unmatched++;
+                }
+            } catch (Exception e) {
+                log.error("[BusanEnrich] 실패 - UC_SEQ={}, {}", item.getUcSeq(), e.getMessage());
+                failed++;
+            }
+        }
+
+        BusanEnrichResult result = new BusanEnrichResult(items.size(), matched, unmatched, failed);
+        log.info("========== 부산명소정보 API 연동 완료: {} ==========", result);
+        return result;
+    }
+
+    // enrichWithBusanAttractionApi()의 항목 하나를 독립된 트랜잭션에서 처리한다.
+    // 기존엔 213건 전체가 하나의 세션/트랜잭션을 공유해서, 중간에 하나가 유니크 제약 위반(중복
+    // busan_uc_seq 매칭 등)으로 실패하면 "current transaction is aborted"가 그 뒤 모든 항목에
+    // 전파되어 사실상 첫 실패 이후로는 전부 실패 처리되던 문제가 있었음(2026-08-06 실제 재현·발견).
+    // REQUIRES_NEW로 매 항목마다 새 트랜잭션을 열어서 한 건의 실패가 나머지에 번지지 않게 격리한다.
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public boolean enrichSingleBusanItem(BusanAttractionApiResponse item) {
+        Double lat = parseDouble(item.getLat());
+        Double lng = parseDouble(item.getLng());
+        if (lat == null || lng == null) {
+            return false;
+        }
+
+        List<TourSpot> nearby = tourSpotRepository.findNearby(lat, lng, BUSAN_ATTRACTION_MATCH_RADIUS_KM);
+        TourSpot spot = nearby.stream()
+                .filter(candidate -> namesMatch(candidate.getName(),
+                        item.getMainTitle(), item.getTitle(), item.getPlace()))
+                .findFirst()
+                .orElse(null);
+
+        if (spot == null) {
+            return false;
+        }
+
+        spot.enrichFromBusanAttraction(
+                item.getUcSeq(),
+                item.getSubtitle(),
+                item.getItemCntnts(),
+                item.getCntctTel(),
+                item.getHomepageUrl(),
+                item.getTrfcInfo(),
+                buildBusanOperatingHours(item),
+                item.getHldyInfo(),
+                item.getUsageAmount()
+        );
+        tourSpotRepository.save(spot);
+        return true;
+    }
+
+    // 부산 대표 명소(도감 60개) 중 부산명소정보 API(공식 관광지 DB)에 실제 등재된 곳을 표시.
+    // enrichWithBusanAttractionApi()와 동일한 좌표(100m)·명칭 매칭 로직을 재사용하되, 후보를
+    // 도감(is_collection=true)으로만 한정해서 is_official_recommended 플래그를 채운다.
+    // AI 일정 생성 프롬프트에서 취향 편중 보완용 tie-breaker 근거로 사용할 예정(제안서 수치 자료용).
+    @Transactional
+    public OfficialRecommendedResult matchOfficialRecommendedSpots() {
+        log.info("========== 공식 추천 관광지(부산명소정보 매칭) 배치 시작 ==========");
+
+        List<BusanAttractionApiResponse> items = busanAttractionApiClient.fetchAll();
+        long totalCollectionSpots = tourSpotRepository.countByCollectionTrue();
+        log.info("도감 관광지: {}건, 부산명소정보 API: {}건", totalCollectionSpots, items.size());
+
+        int matched = 0, failed = 0;
+
+        for (BusanAttractionApiResponse item : items) {
+            try {
+                if (self.matchSingleOfficialRecommendedItem(item)) {
+                    matched++;
+                }
+            } catch (Exception e) {
+                log.error("[OfficialRecommendedMatch] 실패 - UC_SEQ={}, {}", item.getUcSeq(), e.getMessage());
+                failed++;
+            }
+        }
+
+        OfficialRecommendedResult result =
+                new OfficialRecommendedResult((int) totalCollectionSpots, items.size(), matched, failed);
+        log.info("========== 공식 추천 관광지 매칭 완료: {} ==========", result);
+        return result;
+    }
+
+    // matchOfficialRecommendedSpots()의 항목 하나를 독립된 트랜잭션에서 처리 (격리 이유는 enrichSingleBusanItem 참고).
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public boolean matchSingleOfficialRecommendedItem(BusanAttractionApiResponse item) {
+        Double lat = parseDouble(item.getLat());
+        Double lng = parseDouble(item.getLng());
+        if (lat == null || lng == null) {
+            return false;
+        }
+
+        TourSpot spot = tourSpotRepository.findNearby(lat, lng, BUSAN_ATTRACTION_MATCH_RADIUS_KM).stream()
+                .filter(TourSpot::isCollection)
+                .filter(candidate -> namesMatch(candidate.getName(),
+                        item.getMainTitle(), item.getTitle(), item.getPlace()))
+                .findFirst()
+                .orElse(null);
+
+        if (spot == null) {
+            return false;
+        }
+
+        spot.markOfficialRecommended();
+        tourSpotRepository.save(spot);
+        return true;
+    }
+
+    public record OfficialRecommendedResult(int totalCollectionSpots, int totalApiItems, int matched, int failed) {
+        @Override public String toString() {
+            return String.format("도감=%d, API건수=%d, 매칭=%d, 실패=%d",
+                    totalCollectionSpots, totalApiItems, matched, failed);
+        }
+    }
+
+    // 부산명소정보 API로도 매칭 안 된 관광지(description 없음)를 TourAPI 자체 개요(overview)로 백필.
+    // detailCommon2가 contentId 외 파라미터를 얹으면 거부되던 버그를 수정한 뒤(2026-08-06),
+    // 매칭 안 된 256곳 중 251곳(98%)에서 실제로 개요가 내려오는 것을 확인해서 만든 배치.
+    // 지금까지는 상세조회 시점에 매번 TourAPI를 호출하는 라이브 폴백이었는데, 이 배치로 description에
+    // 영구 저장해두면 매 조회마다 외부 API를 안 타도 됨. REQUIRES_NEW로 항목별 격리(부산명소정보 배치와 동일 이유).
+    @Transactional
+    public TourApiOverviewResult enrichWithTourApiOverview() {
+        log.info("========== TourAPI 개요(overview) 백필 시작 ==========");
+
+        List<UUID> targetIds = tourSpotRepository.findWithoutDescription().stream()
+                .map(TourSpot::getId)
+                .toList();
+        log.info("대상: {}건", targetIds.size());
+
+        int filled = 0, empty = 0, failed = 0;
+
+        for (UUID spotId : targetIds) {
+            try {
+                if (self.fillTourApiOverview(spotId)) {
+                    filled++;
+                } else {
+                    empty++;
+                }
+                Thread.sleep(150);
+            } catch (Exception e) {
+                log.error("[TourApiOverview] 실패 - spotId={}, {}", spotId, e.getMessage());
+                failed++;
+            }
+        }
+
+        TourApiOverviewResult result = new TourApiOverviewResult(targetIds.size(), filled, empty, failed);
+        log.info("========== TourAPI 개요 백필 완료: {} ==========", result);
+        return result;
+    }
+
+    // enrichWithTourApiOverview()의 항목 하나를 독립된 트랜잭션에서 처리.
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public boolean fillTourApiOverview(UUID spotId) {
+        TourSpot spot = tourSpotRepository.findById(spotId)
+                .orElseThrow(() -> new IllegalStateException("존재하지 않는 관광지입니다. spotId=" + spotId));
+
+        if (spot.getContentId() == null || spot.getContentId().isBlank()) {
+            return false;
+        }
+
+        String overview = tourApiClient.fetchDetailCommon(spot.getContentId())
+                .map(DetailCommonResponse.CommonItem::getOverview)
+                .orElse(null);
+
+        if (overview == null || overview.isBlank()) {
+            return false;
+        }
+
+        spot.updateDescription(overview);
+        tourSpotRepository.save(spot);
+        return true;
+    }
+
+    public record TourApiOverviewResult(int total, int filled, int empty, int failed) {
+        @Override public String toString() {
+            return String.format("전체=%d, 채움=%d, 원본없음=%d, 실패=%d", total, filled, empty, failed);
+        }
+    }
+
+    // 부산명소정보 API 원문(description)이 너무 길다는 피드백에 따라 OpenAI로 2~3문장으로 재요약.
+    // SUMMARIZE_MIN_LENGTH 이하는 이미 짧다고 보고 건너뜀. 실패한 건은 원문을 그대로 두고 다음 건 계속 진행.
+    @Transactional
+    public SummarizeResult summarizeBusanDescriptions() {
+        List<TourSpot> targets = tourSpotRepository.findByBusanUcSeqIsNotNullAndDescriptionIsNotNull();
+        // 부산명소정보 쪽은 처음부터 description 자체를 요약본으로 덮어써왔음(원문 미보존, 기존 방식 유지)
+        return summarizeDescriptions(targets, "부산명소정보", TourSpot::updateDescription);
+    }
+
+    // TourAPI 자체 개요(overview)로 채워진 소개글도 같은 기준으로 재요약(2026-08-27, 사용자 요청).
+    // 부산명소정보 매칭분(busanUcSeq 있는 것)은 위 메서드가 이미 처리하므로 제외.
+    // 부산명소정보 때와 달리 원문 description은 보존하고 요약본은 summary_description 컬럼에 별도 저장.
+    @Transactional
+    public SummarizeResult summarizeTourApiOverviewDescriptions() {
+        List<TourSpot> targets =
+                tourSpotRepository.findByBusanUcSeqIsNullAndDescriptionIsNotNullAndSummaryDescriptionIsNull();
+        return summarizeDescriptions(targets, "TourAPI 개요", TourSpot::updateSummaryDescription);
+    }
+
+    private SummarizeResult summarizeDescriptions(List<TourSpot> targets, String sourceLabel,
+                                                   java.util.function.BiConsumer<TourSpot, String> applySummary) {
+        log.info("========== {} 소개글 요약 시작 ==========", sourceLabel);
+
+        int summarized = 0, skipped = 0, failed = 0;
+
+        for (TourSpot spot : targets) {
+            String original = spot.getDescription();
+            if (original.length() <= SUMMARIZE_MIN_LENGTH) {
+                skipped++;
+                continue;
+            }
+
+            try {
+                String summary = openAiClient.chatPlainText(SUMMARIZE_SYSTEM_PROMPT, original);
+                if (summary == null || summary.isBlank()) {
+                    failed++;
+                    continue;
+                }
+                applySummary.accept(spot, summary);
+                tourSpotRepository.save(spot);
+                summarized++;
+                Thread.sleep(300);
+            } catch (Exception e) {
+                log.error("[SummarizeDescription] 실패 - contentId={}, {}", spot.getContentId(), e.getMessage());
+                failed++;
+            }
+        }
+
+        SummarizeResult result = new SummarizeResult(targets.size(), summarized, skipped, failed);
+        log.info("========== {} 소개글 요약 완료: {} ==========", sourceLabel, result);
+        return result;
+    }
+
+    public record SummarizeResult(int total, int summarized, int skipped, int failed) {
+        @Override public String toString() {
+            return String.format("전체=%d, 요약=%d, 건너뜀(이미짧음)=%d, 실패=%d", total, summarized, skipped, failed);
+        }
+    }
+
+    // 공백·괄호·특수문자 표기 차이를 무시하고 한쪽이 다른 쪽 이름을 포함하면 같은 관광지로 판단
+    private boolean namesMatch(String existingName, String... busanNames) {
+        String normalizedExisting = normalizeSpotName(existingName);
+        if (normalizedExisting.isEmpty()) return false;
+
+        for (String candidate : busanNames) {
+            String normalizedCandidate = normalizeSpotName(candidate);
+            if (normalizedCandidate.isEmpty()) continue;
+            if (normalizedExisting.equals(normalizedCandidate)
+                    || normalizedExisting.contains(normalizedCandidate)
+                    || normalizedCandidate.contains(normalizedExisting)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private String normalizeSpotName(String name) {
+        if (name == null) return "";
+        return name.replaceAll("[^0-9가-힣a-zA-Z]", "").toLowerCase();
+    }
+
+    private String buildBusanOperatingHours(BusanAttractionApiResponse item) {
+        String day = item.getUsageDay();
+        String time = item.getUsageDayWeekAndTime();
+        if (day == null || day.isBlank())  return time;
+        if (time == null || time.isBlank()) return day;
+        return day + " " + time;
+    }
+
+    private Double parseDouble(String value) {
+        if (value == null || value.isBlank()) return null;
+        try { return Double.parseDouble(value); }
+        catch (NumberFormatException e) { return null; }
+    }
+
+    public record BusanEnrichResult(int total, int matched, int unmatched, int failed) {
+        @Override public String toString() {
+            return String.format("전체=%d, 매칭=%d, 미매칭=%d, 실패=%d", total, matched, unmatched, failed);
+        }
+    }
+
+    private void initSigungu() {
+        SIGUNGU_MAP.forEach((code, name) -> {
+            if (sigunguRepository.findByCode(code).isEmpty()) {
+                sigunguRepository.save(Sigungu.builder().code(code).name(name).build());
+            }
+        });
+        log.info("[Migration] sigungu 초기화 완료");
+    }
+
+    private List<AreaListResponse.AreaItem> fetchAllPages() {
+        List<AreaListResponse.AreaItem> result = new ArrayList<>();
+
+        for (int contentTypeId : TARGET_CONTENT_TYPES) {
+            int pageNo = 1;
+            int collectedForType = 0;
+
+            while (true) {
+                AreaListResponse response = tourApiClient.fetchAreaList(pageNo, contentTypeId);
+
+                if (response == null
+                        || response.getResponse().getBody().getItems() == null
+                        || response.getResponse().getBody().getItems().getItem() == null) break;
+
+                List<AreaListResponse.AreaItem> items =
+                        response.getResponse().getBody().getItems().getItem();
+
+                if (items.isEmpty()) break;
+
+                result.addAll(items);
+                collectedForType += items.size();
+                log.info("[fetchAllPages] contentTypeId={}, page={}, 수집={}, 해당타입누적={}",
+                        contentTypeId, pageNo, items.size(), collectedForType);
+
+                if (collectedForType >= response.getResponse().getBody().getTotalCount()) break;
+                pageNo++;
+            }
+        }
+
+        return result;
+    }
+
+    private boolean upsertSpot(AreaListResponse.AreaItem item) {
+        String contentId = item.getContentid();
+        int contentTypeId = item.getContenttypeid();
+
+        Optional<DetailIntroResponse.IntroItem> intro =
+                tourApiClient.fetchDetailIntro(contentId, contentTypeId);
+
+        Sigungu sigungu = sigunguRepository.findByCode(item.getSigungucode()).orElse(null);
+//        String category = CATEGORY_MAP.getOrDefault(item.getContenttypeid(), "기타");
+        String category = resolveCategory(item.getCat1());
+        String operatingHours = intro.map(DetailIntroResponse.IntroItem::getUsetime).orElse(null);
+
+        Optional<TourSpot> existing = tourSpotRepository.findByContentId(contentId);
+
+        TourSpot spot;
+        boolean isNew = existing.isEmpty();
+
+        if (isNew) {
+            spot = tourSpotRepository.save(TourSpot.builder()
+                    .contentId(contentId)
+                    .name(item.getTitle())
+                    .category(category)
+                    .sigungu(sigungu)
+                    .lat(parseBigDecimal(item.getMapy()))
+                    .lng(parseBigDecimal(item.getMapx()))
+                    .address(item.getAddr1())
+                    .thumbnailUrl(item.getFirstimage())
+                    .operatingHours(operatingHours)
+                    .build());
+        } else {
+            spot = existing.get();
+            spot.update(item.getTitle(), category, sigungu,
+                    parseBigDecimal(item.getMapy()), parseBigDecimal(item.getMapx()),
+                    item.getAddr1(), item.getFirstimage(), operatingHours);
+        }
+
+        return isNew;
+    }
+
+    private String resolveCategory(String cat1) {
+        if (cat1 == null) return "관광지";
+        return switch (cat1) {
+            case "A01" -> "자연·공원";
+            case "A02" -> "역사·문화";
+            case "A03" -> "체험·놀이";
+            case "A04" -> "쇼핑";
+            case "A05" -> "음식";
+            default    -> "관광지";
+        };
+    }
+
+    // 기존 parseDouble 메서드 교체
+    private BigDecimal parseBigDecimal(String value) {
+        if (value == null || value.isBlank()) return null;
+        try { return new BigDecimal(value); }
+        catch (NumberFormatException e) { return null; }
+    }
+
+    public record MigrationResult(int total, int saved, int updated, int failed) {
+        @Override public String toString() {
+            return String.format("전체=%d, 신규=%d, 갱신=%d, 실패=%d", total, saved, updated, failed);
+        }
+    }
+}

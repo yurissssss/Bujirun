@@ -1,0 +1,115 @@
+package com.bujirun.bujirun.domain.itinerary.entity;
+
+import jakarta.persistence.*;
+import lombok.*;
+import org.hibernate.annotations.Fetch;
+import org.hibernate.annotations.FetchMode;
+
+import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.UUID;
+import java.time.LocalDate;
+
+@Entity
+@Table(name = "itineraries")
+@Getter
+@NoArgsConstructor(access = AccessLevel.PROTECTED)
+@AllArgsConstructor
+@Builder
+public class Itinerary {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.UUID)
+    private UUID id;
+
+    @Column(name = "user_id", nullable = false)
+    private UUID userId;
+
+    @Column(name = "session_id")
+    private UUID sessionId;
+
+    // 그룹 일정일 때만 설정됨. 그룹원은 소유자(userId)가 아니어도 이 일정에 접근 가능
+    @Column(name = "group_id")
+    private UUID groupId;
+
+    @Column(name = "plan_type", nullable = false, length = 1)
+    private String planType;
+
+    @Column(nullable = false)
+    @Builder.Default
+    private String status = "draft";
+
+    private String title;
+
+    @Column(name = "start_at")
+    private LocalDate startAt;
+
+    @Column(name = "start_time")
+    private LocalTime startTime;
+
+    @Column(name = "end_at")
+    private LocalDate endAt;
+
+    @Column(name = "end_time")
+    private LocalTime endTime;
+
+    @Column(name = "accommodation_name")
+    private String accommodationName;
+
+    @Column(name = "accommodation_address")
+    private String accommodationAddress;
+
+    @Column(name = "accommodation_lat")
+    private Double accommodationLat;
+
+    @Column(name = "accommodation_lng")
+    private Double accommodationLng;
+
+    @Column(name = "created_at", nullable = false, updatable = false)
+    private LocalDateTime createdAt;
+
+    @Column(name = "updated_at", nullable = false)
+    private LocalDateTime updatedAt;
+
+    @Builder.Default
+    @OneToMany(mappedBy = "itinerary", cascade = CascadeType.ALL, orphanRemoval = true)
+    @OrderBy("dayNumber ASC")
+    @Fetch(FetchMode.SUBSELECT)
+    private List<ItineraryDay> days = new ArrayList<>();
+
+    @PrePersist
+    void prePersist() {
+        createdAt = LocalDateTime.now();
+        updatedAt = LocalDateTime.now();
+    }
+
+    @PreUpdate
+    void preUpdate() {
+        updatedAt = LocalDateTime.now();
+    }
+
+    public void updateTitle(String title) {
+        this.title = title;
+    }
+
+    public void updatePeriod(LocalDate startAt, LocalTime startTime, LocalDate endAt, LocalTime endTime) {
+        if (startAt   != null) this.startAt   = startAt;
+        if (startTime != null) this.startTime = startTime;
+        if (endAt     != null) this.endAt     = endAt;
+        if (endTime   != null) this.endTime   = endTime;
+    }
+
+    public void confirm() {
+        this.status = "confirmed";
+    }
+
+    // 둘 다 null이면 숙소 정보를 지운다(입력창에서 X로 지운 경우).
+    public void updateAccommodation(String accommodationName, String accommodationAddress, Double accommodationLat, Double accommodationLng) {
+        this.accommodationName = accommodationName;
+        this.accommodationAddress = accommodationAddress;
+        this.accommodationLat = accommodationLat;
+        this.accommodationLng = accommodationLng;
+    }
+}

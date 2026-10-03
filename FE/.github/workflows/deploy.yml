@@ -1,0 +1,45 @@
+name: Deploy to GitHub Pages
+
+# 이 워크플로우는 Vite 기준(./dist, VITE_ 환경변수)으로 만들어져 있어서
+# 현재 Next.js 구조와 안 맞아 main push마다 실패함. 실제 배포는 Vercel이
+# main push 시 자동으로 처리하고 있어서, 고치기 전까지는 수동 실행만 가능하게 꺼둠.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build
+        run: npm run build
+        env:
+          VITE_KAKAO_APP_KEY: ${{ secrets.VITE_KAKAO_APP_KEY }}
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v4
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: "./dist" # Vite의 빌드 결과물 폴더
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

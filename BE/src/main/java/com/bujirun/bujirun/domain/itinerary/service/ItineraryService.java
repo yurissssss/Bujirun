@@ -1,0 +1,975 @@
+package com.bujirun.bujirun.domain.itinerary.service;
+
+import com.bujirun.bujirun.domain.collection.repository.CollectionEntryRepository;
+import com.bujirun.bujirun.domain.group.repository.GroupMemberRepository;
+import com.bujirun.bujirun.domain.group.service.GroupService;
+import com.bujirun.bujirun.domain.itinerary.dto.request.*;
+import com.bujirun.bujirun.domain.itinerary.dto.response.*;
+import com.bujirun.bujirun.domain.itinerary.entity.Itinerary;
+import com.bujirun.bujirun.domain.itinerary.entity.ItineraryDay;
+import com.bujirun.bujirun.domain.itinerary.entity.ItineraryItem;
+import com.bujirun.bujirun.domain.itinerary.exception.DayVersionConflictException;
+import com.bujirun.bujirun.domain.itinerary.generate.dto.response.SpotInfo;
+import com.bujirun.bujirun.domain.itinerary.generate.dto.response.SubPath;
+import com.bujirun.bujirun.domain.itinerary.generate.dto.response.TransitDetail;
+import com.bujirun.bujirun.domain.itinerary.generate.dto.response.TransitOption;
+import com.bujirun.bujirun.domain.itinerary.generate.dto.response.TransitRouteResponse;
+import com.bujirun.bujirun.domain.itinerary.generate.service.SubwayScheduleMappingService;
+import com.bujirun.bujirun.domain.itinerary.generate.service.TransitRouteService;
+import com.bujirun.bujirun.domain.itinerary.optimize.dto.request.ItineraryOptimizeRequest;
+import com.bujirun.bujirun.domain.itinerary.optimize.service.ItineraryOptimizeService;
+import com.bujirun.bujirun.domain.itinerary.repository.DayReplaceIdempotencyRepository;
+import com.bujirun.bujirun.domain.itinerary.repository.ItineraryDayRepository;
+import com.bujirun.bujirun.domain.itinerary.repository.ItineraryItemRepository;
+import com.bujirun.bujirun.domain.itinerary.repository.ItineraryRepository;
+import com.bujirun.bujirun.domain.spot.entity.TourSpot;
+import com.bujirun.bujirun.domain.spot.repository.TourSpotRepository;
+import com.bujirun.bujirun.domain.swipe.entity.SwipeSession;
+import com.bujirun.bujirun.domain.swipe.repository.SwipeSessionRepository;
+import com.bujirun.bujirun.domain.visit.repository.VisitRepository;
+import com.bujirun.bujirun.global.exception.ForbiddenException;
+import com.bujirun.bujirun.global.util.TransitRouteUtils;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.EntityNotFoundException;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
+
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
+@Slf4j
+@Service
+@RequiredArgsConstructor
+@Transactional(readOnly = true)
+public class ItineraryService {
+
+    // 하루 일정에 추가할 수 있는 관광지(방문 항목) 최대 개수
+    private static final int MAX_ITEMS_PER_DAY = 10;
+
+    private final ItineraryRepository        itineraryRepository;
+    private final ItineraryDayRepository     itineraryDayRepository;
+    private final ItineraryItemRepository    itineraryItemRepository;
+    private final TourSpotRepository         tourSpotRepository;
+    private final CollectionEntryRepository  collectionEntryRepository;
+    private final VisitRepository            visitRepository;
+    private final GroupMemberRepository      groupMemberRepository;
+    private final GroupService               groupService;
+    private final SwipeSessionRepository     swipeSessionRepository;
+    private final TransitRouteService transitRouteService;
+    private final SubwayScheduleMappingService subwayScheduleMappingService;
+    private final ItineraryOptimizeService itineraryOptimizeService;
+    private final DayReplaceIdempotencyRepository dayReplaceIdempotencyRepository;
+    private final ObjectMapper objectMapper;
+    // bumpDayVersion()에서 day의 낙관적 락 version을 강제로 올리는 데 쓴다(JPQL bulk
+    // update 뒤 이미 로드된 day 인스턴스를 최신 값으로 동기화하려면 refresh가 필요).
+    private final EntityManager entityManager;
+    // ── Itinerary ──────────────────────────────────────────────────
+
+    @Transactional
+    public ItineraryDetailResponse create(CreateItineraryRequest req, UUID userId) {
+        if (req.groupId() != null) {
+            if (!groupMemberRepository.existsById_GroupIdAndId_UserId(req.groupId(), userId)) {
+                throw new IllegalArgumentException("그룹 멤버만 그룹 일정을 만들 수 있습니다.");
+            }
+            if (itineraryRepository.existsByGroupId(req.groupId())) {
+                throw new IllegalArgumentException("이미 이 그룹의 일정이 존재합니다. 그룹당 일정은 하나만 만들 수 있습니다.");
+            }
+        }
+
+        UUID sessionId = null;
+        if (req.sessionId() != null) {
+            SwipeSession session = swipeSessionRepository.findById(req.sessionId())
+                    .orElseThrow(() -> new EntityNotFoundException("스와이프 세션을 찾을 수 없습니다. id=" + req.sessionId()));
+            if (!session.getUserId().equals(userId)) {
+                throw new IllegalArgumentException("본인의 스와이프 세션만 일정 생성에 사용할 수 있습니다.");
+            }
+            sessionId = session.getId();
+        }
+
+        validatePeriodOrder(req.startAt(), req.startTime(), req.endAt(), req.endTime());
+
+        Itinerary itinerary = Itinerary.builder()
+                .userId(userId)
+                .sessionId(sessionId)
+                .groupId(req.groupId())
+                .planType(req.planType() != null ? req.planType() : "A")
+                .title(req.title())
+                .startAt(req.startAt())
+                .startTime(req.startTime())
+                .endAt(req.endAt())
+                .endTime(req.endTime())
+                .build();
+        return ItineraryDetailResponse.from(itineraryRepository.save(itinerary), Set.of(), Set.of());
+    }
+
+    public ItineraryDetailResponse getById(UUID id, UUID userId) {
+        Itinerary itinerary = findWithDetails(id);
+        validateAccess(itinerary, userId);
+        return ItineraryDetailResponse.from(itinerary, fetchCollectedSpotIds(userId), fetchVisitedItemIds(userId, itemIdsOf(itinerary)));
+    }
+
+    // 내 소유 일정 + 내가 속한 그룹의 공유 일정을 함께 반환
+    public List<ItinerarySummaryResponse> getByUserId(UUID userId) {
+        List<UUID> groupIds = groupMemberRepository.findById_UserId(userId).stream()
+                .map(gm -> gm.getId().getGroupId())
+                .toList();
+
+        List<Itinerary> own = itineraryRepository.findByUserIdAndGroupIdIsNullOrderByCreatedAtDesc(userId);
+        List<Itinerary> grouped = groupIds.isEmpty()
+                ? List.of()
+                : itineraryRepository.findByGroupIdInOrderByCreatedAtDesc(groupIds);
+
+        return Stream.concat(own.stream(), grouped.stream())
+                .collect(Collectors.toMap(Itinerary::getId, i -> i, (a, b) -> a))
+                .values().stream()
+                .sorted(Comparator.comparing(Itinerary::getCreatedAt).reversed())
+                .map(ItinerarySummaryResponse::from)
+                .toList();
+    }
+
+    @Transactional
+    public ItineraryDetailResponse update(UUID id, UpdateItineraryRequest req, UUID userId) {
+        Itinerary itinerary = findWithDetails(id);
+        validateAccess(itinerary, userId);
+        if (req.title() != null)  itinerary.updateTitle(req.title());
+        LocalTime oldStartTime = itinerary.getStartTime();
+        LocalDate oldStartAt = itinerary.getStartAt();
+        // 기간 검증·저장은 "이번 요청이 날짜·시간 필드를 하나라도 보낸 경우"에만 한다.
+        // 프론트는 값이 바뀌지 않은 날짜·시간 필드를 아예 보내지 않으므로, 저장될 최종 상태만
+        // 보고 검증하면 이미 잘못 저장돼 있는 일정(예: 당일치기에 start_time == end_time == 00:00)이
+        // 제목만 바꾸거나 숙소만 저장하는 요청까지 400을 맞고 빠져나갈 방법이 없어진다.
+        // 시각만 바꾸는 요청(startAt/endAt 없이 startTime만)도 반영해야 한다 — 예전 조건은
+        // startAt/endAt 중 하나가 있어야 updatePeriod를 호출해서, 시간만 보낸 요청은 조용히 무시됐다.
+        if (req.startAt() != null || req.startTime() != null || req.endAt() != null || req.endTime() != null) {
+            // 시작 > 종료로 저장되면 그 뒤로는 프론트에서 어떤 시각도 수정할 수 없게 되므로
+            // (TripEditModal의 clamp는 픽커를 직접 건드릴 때만 돌고, 여기까지 오면 막을 곳이 없었다)
+            // 요청값과 기존값을 합친 "저장될 최종 상태"를 기준으로 순서를 검증한다.
+            validatePeriodOrder(
+                    req.startAt()   != null ? req.startAt()   : itinerary.getStartAt(),
+                    req.startTime() != null ? req.startTime() : itinerary.getStartTime(),
+                    req.endAt()     != null ? req.endAt()     : itinerary.getEndAt(),
+                    req.endTime()   != null ? req.endTime()   : itinerary.getEndTime());
+            itinerary.updatePeriod(req.startAt(), req.startTime(), req.endAt(), req.endTime());
+        }
+        // 기간을 옮겼는데 Day의 날짜를 그대로 두면, 일정 목록엔 새 기간이 보이지만 일정
+        // 상세(타임라인)와 홈의 "오늘의 일정"은 수정 전 날짜를 계속 보여준다. 여행 일수는
+        // 수정해도 유지되므로(TripEditModal) Day 날짜는 항상 새 시작일 + (dayNumber - 1)이다.
+        LocalDate newStartAt = itinerary.getStartAt();
+        if (newStartAt != null && !newStartAt.equals(oldStartAt)) {
+            itinerary.getDays().forEach(day -> day.updateDate(newStartAt.plusDays(day.getDayNumber() - 1L)));
+        }
+        // 여행 시작 시간이 통째로 밀리면(예: TripEditModal에서 출발 시간 변경) 각 Day를 새
+        // 시작 시각 기준으로 다시 최적화한다 — 관광지 구성은 그대로 두되 동선/순서는 좌표 기준으로
+        // 다시 정렬하고, 운영시간과 충돌하는 관광지는 마감 전에 방문하도록 OpenAI가 순서를 보정한다.
+        if (req.startTime() != null && oldStartTime != null && !req.startTime().equals(oldStartTime)) {
+            ItineraryOptimizeRequest optimizeRequest = new ItineraryOptimizeRequest(null, req.startTime());
+            itinerary.getDays().stream()
+                    .filter(day -> !day.getItems().isEmpty())
+                    .forEach(day -> {
+                        itineraryOptimizeService.optimizeDay(day.getId(), optimizeRequest, userId);
+                        // optimizeDay는 각 항목의 orderIndex만 갱신한다 — day.getItems()는 @OrderBy가
+                        // "DB에서 처음 로드할 때"만 적용되고 같은 트랜잭션 내 필드 변경으로는 자동
+                        // 재정렬되지 않으므로, 이번 응답에 바뀐 순서를 바로 반영하려면 직접 정렬해야 한다.
+                        day.getItems().sort(Comparator.comparing(ItineraryItem::getOrderIndex));
+                    });
+        }
+        // 필드가 아예 안 온 것(null, 다른 필드만 수정하는 요청)과 "지우기"(빈 문자열)를
+        // 구분해야 해서, null 체크를 통과한 경우에만 빈 문자열을 null로 정규화해 저장한다.
+        if (req.accommodationName() != null || req.accommodationAddress() != null) {
+            String name = blankToNull(req.accommodationName());
+            String address = blankToNull(req.accommodationAddress());
+            Double lat = name == null ? null : req.accommodationLat();
+            Double lng = name == null ? null : req.accommodationLng();
+            itinerary.updateAccommodation(name, address, lat, lng);
+        }
+        if ("confirmed".equals(req.status())) itinerary.confirm();
+        return ItineraryDetailResponse.from(itinerary, fetchCollectedSpotIds(userId), fetchVisitedItemIds(userId, itemIdsOf(itinerary)));
+    }
+
+    // 일정 삭제는 개인 일정 전용. 그룹 일정은 나가기(leave)로만 정리 가능 (공유 일정을 통째로 지울 수 없도록)
+    @Transactional
+    public void delete(UUID id, UUID userId) {
+        Itinerary itinerary = itineraryRepository.findById(id)
+                .orElseThrow(() -> new EntityNotFoundException("일정을 찾을 수 없습니다. id=" + id));
+        validateOwnerOnly(itinerary, userId);
+        if (itinerary.getGroupId() != null) {
+            throw new IllegalArgumentException("그룹 일정은 삭제 대신 나가기를 사용해주세요.");
+        }
+        itineraryRepository.delete(itinerary);
+    }
+
+    // 그룹 일정 나가기. 그룹에 혼자 남은 상태에서 나가면 그룹과 일정이 함께 삭제된다.
+    @Transactional
+    public void leave(UUID id, UUID userId) {
+        Itinerary itinerary = itineraryRepository.findById(id)
+                .orElseThrow(() -> new EntityNotFoundException("일정을 찾을 수 없습니다. id=" + id));
+        if (itinerary.getGroupId() == null) {
+            throw new IllegalArgumentException("개인 일정은 나가기를 사용할 수 없습니다. 삭제를 이용해주세요.");
+        }
+        groupService.leave(itinerary.getGroupId(), userId);
+    }
+
+    // ── Day ────────────────────────────────────────────────────────
+
+    @Transactional
+    public ItineraryDayResponse addDay(UUID itineraryId, AddDayRequest req, UUID userId) {
+        Itinerary itinerary = itineraryRepository.findById(itineraryId)
+                .orElseThrow(() -> new EntityNotFoundException("일정을 찾을 수 없습니다. id=" + itineraryId));
+        validateAccess(itinerary, userId);
+
+        if (itineraryDayRepository.existsByItineraryIdAndDayNumber(itineraryId, req.dayNumber())) {
+            throw new IllegalArgumentException("이미 존재하는 Day 번호입니다. dayNumber=" + req.dayNumber());
+        }
+
+        LocalDate date = req.date();
+        if (date == null && itinerary.getStartAt() != null) {
+            date = itinerary.getStartAt().plusDays(req.dayNumber() - 1);
+        }
+
+        ItineraryDay day = ItineraryDay.builder()
+                .itinerary(itinerary)
+                .dayNumber(req.dayNumber())
+                .date(date)
+                .build();
+        // 새로 만든 day는 항목이 없으므로 인증 항목 집합도 비어 있다.
+        return ItineraryDayResponse.from(itineraryDayRepository.save(day), fetchCollectedSpotIds(userId), Set.of());
+    }
+
+    @Transactional
+    public void deleteDay(UUID itineraryId, UUID dayId, UUID userId) {
+        ItineraryDay day = itineraryDayRepository.findById(dayId)
+                .filter(d -> d.getItinerary().getId().equals(itineraryId))
+                .orElseThrow(() -> new EntityNotFoundException("Day를 찾을 수 없습니다. id=" + dayId));
+        validateAccess(day.getItinerary(), userId);
+        itineraryDayRepository.delete(day);
+    }
+
+    // ── Item ────────────────────────────────────────────────────────
+
+    @Transactional
+    public ItineraryItemResponse addItem(UUID itineraryId, UUID dayId, AddItemRequest req, UUID userId) {
+        // 정원 체크(size() >= MAX)와 삽입 사이의 레이스를 막기 위해 day 행을 잠그고 조회한다.
+        // 실시간 협업 편집이 이탈/합류 시 같은 day에 여러 항목을 동시에(Promise.allSettled)
+        // addItem으로 flush하는 경우, 잠금 없이는 여러 트랜잭션이 동시에 "9개니까 추가 가능"을
+        // 통과해 정원을 넘겨 저장하는 문제가 실제로 재현됨 — 같은 day에 대한 addItem을 직렬화.
+        ItineraryDay day = itineraryDayRepository.findByIdForUpdate(dayId)
+                .filter(d -> d.getItinerary().getId().equals(itineraryId))
+                .orElseThrow(() -> new EntityNotFoundException("Day를 찾을 수 없습니다. id=" + dayId));
+        validateAccess(day.getItinerary(), userId);
+
+        if (day.getItems().size() >= MAX_ITEMS_PER_DAY) {
+            throw new IllegalArgumentException("하루 일정에는 관광지를 최대 " + MAX_ITEMS_PER_DAY + "개까지만 추가할 수 있습니다.");
+        }
+
+        validateArrivalTimeAvailable(day, req.arrivalTime(), null);
+
+        TourSpot spot = tourSpotRepository.findById(req.spotId())
+                .orElseThrow(() -> new EntityNotFoundException("관광지를 찾을 수 없습니다. id=" + req.spotId()));
+
+        // 직전 스팟과의 구간 정보(역명/노선번호 등)는 항상 자동 계산한다.
+        // travelMode는 프론트가 보낸 값이 있으면 그 수단에 맞는 옵션을 찾아서 쓰고,
+        // 없으면(null) 자동 산출된 최적 옵션을 그대로 쓴다.
+        String travelMode = req.travelMode();
+        Integer travelTimeMin = req.travelTimeMin();
+        Integer travelFare = null;
+        String routeType = null;
+        String routeNo = null;
+        String startStationName = null;
+        String endStationName = null;
+        String startArsId = null;
+        TransitDetail transitDetail = TransitDetail.EMPTY;
+
+        // 새 항목의 "직전 스팟"은 요청된 삽입 위치(orderIndex) 기준으로 잡는다 — 기존 항목을
+        // orderIndex 순으로 정렬했을 때 (orderIndex - 1)번째 항목이 직전 스팟이다.
+        // 단순히 max(orderIndex)로 잡으면 ①중간에 끼워 넣을 때 맨 뒤 항목을 직전으로 착각하고,
+        // ②실시간 협업 편집에서 여러 항목을 거의 동시에 addItem 할 때 뒤쪽 항목이 먼저 저장되며
+        // 앞 항목의 구간을 뒤 항목 기준으로 계산해, 프론트에서 교통수단 배너가 안 뜨거나 잘못
+        // 뜨는 문제가 있었다. (맨 앞에 추가면 직전 스팟 없음)
+        List<ItineraryItem> orderedItems = day.getItems().stream()
+                .sorted(Comparator.comparing(ItineraryItem::getOrderIndex))
+                .toList();
+        int prevPos = Math.min(req.orderIndex() - 1, orderedItems.size() - 1);
+        ItineraryItem prevItem = prevPos >= 0 ? orderedItems.get(prevPos) : null;
+
+        if (prevItem != null) {
+            List<SpotInfo> pair = List.of(toSpotInfo(prevItem.getSpot()), toSpotInfo(spot));
+            List<TransitRouteResponse> routes = transitRouteService.getRoutesForDay(pair, null,
+                    TransitRouteService.toTravelAt(day.getDate(), req.arrivalTime()));
+
+            if (!routes.isEmpty() && !routes.get(0).options().isEmpty()) {
+                List<TransitOption> options = routes.get(0).options();
+                String requestedMode = travelMode;
+                TransitOption leg = requestedMode != null
+                        ? options.stream()
+                                .filter(opt -> matchesRequestedMode(requestedMode, opt))
+                                .findFirst()
+                                .orElse(options.get(0))
+                        : options.get(0);
+                SubPath firstSubPath = TransitRouteUtils.findFirstTransitSubPath(leg.subPaths());
+
+                travelMode = TransitRouteUtils.toTravelMode(leg.type());
+                if (travelTimeMin == null) travelTimeMin = leg.totalTime();
+                travelFare = TransitRouteUtils.toTravelFare(leg);
+                // routeType: subPath 실측 타입(버스/지하철) 우선, 없으면(도보/택시 옵션) 옵션 타입 그대로
+                routeType = firstSubPath != null ? firstSubPath.type() : leg.type();
+                routeNo = firstSubPath != null ? firstSubPath.routeNo() : null;
+                startStationName = firstSubPath != null ? firstSubPath.startName() : null;
+                endStationName = firstSubPath != null ? firstSubPath.endName() : null;
+                startArsId = firstSubPath != null ? firstSubPath.startArsId() : null;
+                transitDetail = TransitDetail.from(leg, subwayScheduleMappingService.mapSubwaySegments(leg));
+            }
+        }
+
+        ItineraryItem item = ItineraryItem.builder()
+                .day(day)
+                .spot(spot)
+                .orderIndex(req.orderIndex())
+                .arrivalTime(req.arrivalTime())
+                .durationMin(req.durationMin())
+                .travelMode(travelMode)
+                .travelTimeMin(travelTimeMin)
+                .travelFare(travelFare)
+                .routeType(routeType)
+                .routeNo(routeNo)
+                .startStationName(startStationName)
+                .endStationName(endStationName)
+                .startArsId(startArsId)
+                .transitDetail(transitDetail)
+                .memo(req.memo())
+                .build();
+
+        // 방금 추가한 항목은 아직 인증 기록이 있을 수 없다.
+        ItineraryItem saved = itineraryItemRepository.save(item);
+        return ItineraryItemResponse.from(saved, fetchCollectedSpotIds(userId), Set.of());
+    }
+
+    // node-yjs 서버가 room의 flush를 대신 호출하는 경로(/api/internal/**). actorUserId가
+    // 그 일정의 소유자/collaborator가 아니면 403 — 아래 replaceDayItems도 내부에서
+    // validateAccess를 다시 호출하지만 그건 IllegalArgumentException(400)으로 매핑되므로,
+    // "누구인지는 확실한데 권한이 없는" 이 경로는 여기서 먼저 걸러 403으로 구분해서 응답한다.
+    // 그 외 로직(행 잠금/버전 체크/멱등키)은 replaceDayItems를 그대로 재사용한다 — node가
+    // 유일한 flush 주체가 된 뒤에도 배포 중 구버전 프론트가 잠깐 같이 flush할 수 있어서
+    // 이 방어 로직들은 계속 필요하다.
+    @Transactional
+    public ItineraryDayResponse replaceDayItemsInternal(UUID itineraryId, UUID dayId,
+                                                          InternalReplaceDayItemsRequest req) {
+        Itinerary itinerary = itineraryRepository.findById(itineraryId)
+                .orElseThrow(() -> new EntityNotFoundException("일정을 찾을 수 없습니다. id=" + itineraryId));
+        try {
+            validateAccess(itinerary, req.actorUserId());
+        } catch (IllegalArgumentException e) {
+            throw new ForbiddenException(e.getMessage());
+        }
+        ReplaceDayItemsRequest delegated = new ReplaceDayItemsRequest(
+                req.operationId(), req.expectedVersion(), req.items());
+        return replaceDayItems(itineraryId, dayId, delegated, req.actorUserId());
+    }
+
+    // day의 항목 전체를 한 번에 원자적으로 교체한다. 기존엔 실시간 협업 편집이 재구성(삭제 N번 +
+    // 추가 N번)을 개별 요청으로 보내서, 여러 클라이언트가 같은 변경을 동시에 재전송하면 일부
+    // 요청만 성공하고 나머지는 실패해 day가 반쪽만 재구성된 채 남는 사고가 있었다
+    // (2026-09-16 프로덕션에서 실제 발생 — 재구성 삭제는 다 됐는데 재추가가 부분적으로만
+    // 반영됨). operationId로 같은 논리적 편집의 중복 요청을 감지해, 첫 요청만 실제로 처리하고
+    // 이후 재전송은 캐시된 결과를 그대로 돌려준다(재시도/중복 전송이 안전해짐).
+    @Transactional
+    public ItineraryDayResponse replaceDayItems(UUID itineraryId, UUID dayId,
+                                                 ReplaceDayItemsRequest req, UUID userId) {
+        boolean claimed;
+        try {
+            claimed = dayReplaceIdempotencyRepository.claim(req.operationId());
+        } catch (Exception e) {
+            log.warn("[replaceDayItems] Redis 클레임 실패(장애로 추정) - 멱등성 없이 직접 처리. operationId={}, {}",
+                    req.operationId(), e.getMessage());
+            claimed = false;
+        }
+        if (!claimed) {
+            String result = null;
+            try {
+                result = dayReplaceIdempotencyRepository.waitForResult(req.operationId());
+            } catch (Exception e) {
+                log.warn("[replaceDayItems] 결과 대기 중 Redis 오류 - 직접 처리로 폴백. operationId={}, {}",
+                        req.operationId(), e.getMessage());
+            }
+            if (result != null) {
+                try {
+                    ItineraryDayResponse cached = objectMapper.readValue(result, ItineraryDayResponse.class);
+                    // operationId는 day + 항목 구성만으로 만들어져서, TTL(10분) 안에 "같은 구성"의
+                    // 편집을 다시 하면(같은 로그를 다시 불러오기, 지웠던 관광지 다시 추가 등) 이미
+                    // 지워진 행의 id가 담긴 옛 응답이 돌아왔다 — 호출부는 그 id로 로컬을 맞춰서
+                    // 이후 travel-mode 조회가 404가 났다(2026-09-29 로컬 재현). 캐시 이후 day가
+                    // 바뀌었으면(version 불일치) 다른 편집으로 보고 새로 처리한다.
+                    Long currentVersion = itineraryDayRepository.findById(dayId)
+                            .map(ItineraryDay::getVersion).orElse(null);
+                    if (java.util.Objects.equals(cached.version(), currentVersion)) {
+                        return cached;
+                    }
+                    log.info("[replaceDayItems] 캐시된 응답이 현재 day와 다름(version {} → {}) — 새로 처리. operationId={}",
+                            cached.version(), currentVersion, req.operationId());
+                } catch (Exception e) {
+                    log.warn("[replaceDayItems] 캐시된 응답 역직렬화 실패, 재처리로 폴백 - operationId={}, {}",
+                            req.operationId(), e.getMessage());
+                }
+            }
+            // 선점자가 죽었거나 타임아웃, 또는 Redis 자체가 불능 — 안전장치로 이 요청이 직접
+            // 처리한다(DB 행 잠금이 있어 중복 처리돼도 데이터 정합성은 깨지지 않음). claimed가
+            // false로 남으므로 아래에서 이 결과를 캐시에 쓰지 않는다 — 원래 선점자가 뒤늦게
+            // 자기 결과를 쓸 자리를 덮어쓰지 않기 위함.
+            log.warn("[replaceDayItems] 선점 실패 - 직접 처리로 폴백. operationId={}", req.operationId());
+        }
+        AtomicReference<String> responseToCache = new AtomicReference<>();
+        if (claimed) {
+            registerIdempotencyCompletion(req.operationId(), responseToCache);
+        }
+
+        ItineraryDay day = itineraryDayRepository.findByIdForUpdate(dayId)
+                .filter(d -> d.getItinerary().getId().equals(itineraryId))
+                .orElseThrow(() -> new EntityNotFoundException("Day를 찾을 수 없습니다. id=" + dayId));
+        validateAccess(day.getItinerary(), userId);
+        checkDayVersion(day, req.expectedVersion(), userId);
+
+        List<ReplaceDayItemsRequest.ItemInput> items = req.items();
+        if (items.size() > MAX_ITEMS_PER_DAY) {
+            throw new IllegalArgumentException("하루 일정에는 관광지를 최대 " + MAX_ITEMS_PER_DAY + "개까지만 추가할 수 있습니다.");
+        }
+        items = dropDuplicateArrivalTimes(items, dayId);
+
+        // existingItemId로 지목된 기존 항목은 "그 행 그대로" 갱신한다(삭제 후 재생성이 아님) —
+        // id가 유지돼야 방문인증(itinerary_item_id 매칭)과 여행로그 연결이 구조적 편집 한 번에
+        // 끊기지 않는다(첫 구현 땐 매번 새 id를 발급해서 이 문제가 있었음, 2026-09-16).
+        // 목록에서 완전히 빠진(= existingItemId로도 지목 안 된) 기존 항목만 실제로 삭제한다.
+        Map<UUID, ItineraryItem> existingById = day.getItems().stream()
+                .collect(Collectors.toMap(ItineraryItem::getId, i -> i));
+        Map<UUID, UUID> previousSpotIdByItemId = previousSpotIdsByItemId(day.getItems());
+        Set<UUID> keptIds = items.stream()
+                .map(ReplaceDayItemsRequest.ItemInput::existingItemId)
+                .filter(java.util.Objects::nonNull)
+                .collect(Collectors.toSet());
+        day.getItems().removeIf(item -> !keptIds.contains(item.getId()));
+
+        List<ItineraryItem> orderedResult = new ArrayList<>();
+        ItineraryItem prev = null;
+        int orderIndex = 0;
+        for (ReplaceDayItemsRequest.ItemInput input : items) {
+            TourSpot spot = tourSpotRepository.findById(input.spotId())
+                    .orElseThrow(() -> new EntityNotFoundException("관광지를 찾을 수 없습니다. id=" + input.spotId()));
+            ItineraryItem existing = input.existingItemId() != null ? existingById.get(input.existingItemId()) : null;
+
+            ItineraryItem item;
+            if (existing != null && isLegUnchanged(existing, input, prev, previousSpotIdByItemId)) {
+                // 직전 관광지가 그대로인 구간은 경로를 다시 계산하지 않고 저장된 값을 유지한다.
+                // 매 flush마다 모든 구간을 ODsay/실시간 도착정보로 재계산하던 탓에 요청이 5초를
+                // 넘겨 node-yjs flush가 연속 실패했다(2026-09-28 운영). 사용자가 골라둔 경로도
+                // 그대로 보존된다.
+                LocalTime previousArrivalTime = existing.getArrivalTime();
+                existing.update(orderIndex, input.arrivalTime(), input.durationMin(), null,
+                        input.travelTimeMin(), input.memo());
+                if (!Objects.equals(previousArrivalTime, existing.getArrivalTime())) {
+                    refreshTaxiTime(existing, prev);
+                }
+                item = existing;
+            } else if (existing != null) {
+                applyTransitFields(existing, spot, orderIndex, input, prev, existing.getTravelMode());
+                item = existing;
+            } else {
+                item = ItineraryItem.builder().day(day).spot(spot).build();
+                applyTransitFields(item, spot, orderIndex, input, prev, input.travelMode());
+                day.getItems().add(item);
+            }
+            orderedResult.add(item);
+            orderIndex++;
+            prev = item;
+        }
+        itineraryItemRepository.saveAll(orderedResult);
+        bumpDayVersion(day);
+
+        ItineraryDayResponse response = ItineraryDayResponse.from(day, fetchCollectedSpotIds(userId), Set.of());
+        if (claimed) {
+            try {
+                responseToCache.set(objectMapper.writeValueAsString(response));
+            } catch (Exception e) {
+                log.warn("[replaceDayItems] 응답 직렬화 실패(멱등성 보장 안 됨) - operationId={}, {}", req.operationId(), e.getMessage());
+            }
+        }
+        return response;
+    }
+
+    // 선점한 operationId의 뒷정리를 트랜잭션 결과에 맞춘다. 커밋됐을 때만 응답을 캐시하고
+    // (롤백된 결과를 재시도에 돌려주면 안 됨), 예외·409·롤백으로 끝나면 선점 표시를 푼다 —
+    // 안 풀면 TTL 동안 같은 operationId의 재시도가 전부 대기 후 폴백하는 실패 루프가 된다.
+    private void registerIdempotencyCompletion(UUID operationId, AtomicReference<String> responseToCache) {
+        TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+            @Override
+            public void afterCompletion(int status) {
+                String json = responseToCache.get();
+                try {
+                    if (status == STATUS_COMMITTED && json != null) {
+                        dayReplaceIdempotencyRepository.save(operationId, json);
+                    } else {
+                        dayReplaceIdempotencyRepository.release(operationId);
+                    }
+                } catch (Exception e) {
+                    log.warn("[replaceDayItems] 멱등키 정리 실패 - operationId={}, {}", operationId, e.getMessage());
+                }
+            }
+        });
+    }
+
+    // 같은 시각이 둘 이상이면 뒤에 나온 항목의 시각만 반영하지 않는다(기존 항목은 원래 시각을
+    // 유지, 새 항목은 시각 없음). 예전엔 400으로 day 전체 교체를 거부했는데, node-yjs는 시간만
+    // 바뀌어도 day 전체를 보내므로 겹친 시각 하나 때문에 그날의 추가/삭제/순서 변경까지 전부
+    // 저장되지 않았다(2026-09-29 운영, 동시 로그 불러오기로 10:00이 겹친 day가 계속 400).
+    private List<ReplaceDayItemsRequest.ItemInput> dropDuplicateArrivalTimes(
+            List<ReplaceDayItemsRequest.ItemInput> items, UUID dayId) {
+        Set<LocalTime> seen = new java.util.HashSet<>();
+        List<ReplaceDayItemsRequest.ItemInput> result = new ArrayList<>(items.size());
+        for (ReplaceDayItemsRequest.ItemInput input : items) {
+            if (input.arrivalTime() == null || seen.add(input.arrivalTime())) {
+                result.add(input);
+                continue;
+            }
+            log.warn("[replaceDayItems] 같은 시각 중복 — 뒤 항목의 시각은 반영하지 않음. dayId={}, spotId={}, arrivalTime={}",
+                    dayId, input.spotId(), input.arrivalTime());
+            result.add(new ReplaceDayItemsRequest.ItemInput(input.existingItemId(), input.spotId(), null,
+                    input.durationMin(), input.travelMode(), input.travelTimeMin(), input.memo()));
+        }
+        return result;
+    }
+
+    // 기존 항목별 "직전 항목의 관광지 id"(order_index 기준). 첫 항목은 값이 없다.
+    private Map<UUID, UUID> previousSpotIdsByItemId(List<ItineraryItem> items) {
+        List<ItineraryItem> ordered = items.stream()
+                .sorted(Comparator.comparingInt(ItineraryItem::getOrderIndex))
+                .toList();
+        Map<UUID, UUID> result = new java.util.HashMap<>();
+        for (int i = 1; i < ordered.size(); i++) {
+            result.put(ordered.get(i).getId(), ordered.get(i - 1).getSpot().getId());
+        }
+        return result;
+    }
+
+    // 도착 항목과 직전 관광지가 둘 다 이전과 같고, 이동수단 변경 요청도 없으면 이 구간의 경로는
+    // 다시 계산할 이유가 없다. 경로가 한 번도 계산되지 않은 항목(travelMode 없음)은 계산한다.
+    private boolean isLegUnchanged(ItineraryItem existing, ReplaceDayItemsRequest.ItemInput input,
+                                   ItineraryItem prev, Map<UUID, UUID> previousSpotIdByItemId) {
+        if (prev == null || existing.getTravelMode() == null) return false;
+        if (!existing.getSpot().getId().equals(input.spotId())) return false;
+        if (input.travelMode() != null && !input.travelMode().equals(existing.getTravelMode())) return false;
+        return prev.getSpot().getId().equals(previousSpotIdByItemId.get(existing.getId()));
+    }
+
+    // addItem의 구간(교통수단) 계산 로직과 동일하다 — 의도적으로 별도 메서드로 둔다(공유
+    // 리팩터링 시 addItem의 기존 동작을 건드릴 위험을 피하기 위함, 2026-09-16).
+    // target: 새로 만드는 중인 항목(day/spot만 세팅된 빈 builder 결과) 또는 그대로 갱신할
+    // 기존 항목. preferredTravelMode: 신규 항목이면 프론트 요청값, 기존 항목 갱신이면 그
+    // 항목이 원래 갖고 있던 값 — addItem의 requestedMode와 동일하게 옵션 매칭에 쓰여서
+    // 사용자가 이전에 골라둔 수단 "의도"는 유지하되 실제 경로(시간/노선)는 이웃 변경에 맞춰
+    // 새로 계산한다. durationMin/memo는 target에 이미 있는 값을 입력이 없을 때 그대로 둔다.
+    private void applyTransitFields(ItineraryItem target, TourSpot spot, int orderIndex,
+                                     ReplaceDayItemsRequest.ItemInput input, ItineraryItem prevItem,
+                                     String preferredTravelMode) {
+        String travelMode = input.travelMode() != null ? input.travelMode() : preferredTravelMode;
+        Integer travelTimeMin = input.travelTimeMin();
+        Integer travelFare = null;
+        Integer durationMin = input.durationMin() != null ? input.durationMin() : target.getDurationMin();
+        String memo = input.memo() != null ? input.memo() : target.getMemo();
+        String routeType = null;
+        String routeNo = null;
+        String startStationName = null;
+        String endStationName = null;
+        String startArsId = null;
+        TransitDetail transitDetail = TransitDetail.EMPTY;
+
+        if (prevItem != null) {
+            List<SpotInfo> pair = List.of(toSpotInfo(prevItem.getSpot()), toSpotInfo(spot));
+            LocalTime arrivalTime = input.arrivalTime() != null ? input.arrivalTime() : target.getArrivalTime();
+            List<TransitRouteResponse> routes = transitRouteService.getRoutesForDay(pair, null,
+                    TransitRouteService.toTravelAt(target.getDay().getDate(), arrivalTime));
+
+            if (!routes.isEmpty() && !routes.get(0).options().isEmpty()) {
+                List<TransitOption> options = routes.get(0).options();
+                String requestedMode = travelMode;
+                TransitOption leg = requestedMode != null
+                        ? options.stream()
+                                .filter(opt -> matchesRequestedMode(requestedMode, opt))
+                                .findFirst()
+                                .orElse(options.get(0))
+                        : options.get(0);
+                SubPath firstSubPath = TransitRouteUtils.findFirstTransitSubPath(leg.subPaths());
+
+                travelMode = TransitRouteUtils.toTravelMode(leg.type());
+                if (travelTimeMin == null) travelTimeMin = leg.totalTime();
+                travelFare = TransitRouteUtils.toTravelFare(leg);
+                routeType = firstSubPath != null ? firstSubPath.type() : leg.type();
+                routeNo = firstSubPath != null ? firstSubPath.routeNo() : null;
+                startStationName = firstSubPath != null ? firstSubPath.startName() : null;
+                endStationName = firstSubPath != null ? firstSubPath.endName() : null;
+                startArsId = firstSubPath != null ? firstSubPath.startArsId() : null;
+                transitDetail = TransitDetail.from(leg, subwayScheduleMappingService.mapSubwaySegments(leg));
+            }
+        }
+
+        target.update(orderIndex, input.arrivalTime(), durationMin, travelMode, travelTimeMin, memo);
+        target.updateRoute(travelMode, travelTimeMin, travelFare, routeType, routeNo,
+                startStationName, endStationName, startArsId, transitDetail);
+    }
+
+    private SpotInfo toSpotInfo(TourSpot spot) {
+        return SpotInfo.builder()
+                .contentId(spot.getContentId())
+                .name(spot.getName())
+                .category(spot.getCategory())
+                .lat(spot.getLat() != null ? spot.getLat().doubleValue() : 0)
+                .lng(spot.getLng() != null ? spot.getLng().doubleValue() : 0)
+                .address(spot.getAddress())
+                .thumbnailUrl(spot.getThumbnailUrl())
+                .operatingHours(spot.getOperatingHours())
+                .build();
+    }
+
+    // 요청받은 travelMode(walk/transit/taxi/bus/subway/combo, 또는 옵션 목록에서 받은 원본 타입
+    // 라벨을 그대로 돌려보낸 값)가 이 옵션과 일치하는지 판단한다. bus/subway/combo는 OPT=1로 받은
+    // ODsay pathType별 후보(지하철 전용/버스 전용/버스+지하철 조합)를 정확히 선택하기 위한 것이고,
+    // transit은 하위호환용 — 셋 중 정렬상 가장 빠른 옵션이 선택된다.
+    private boolean matchesRequestedMode(String preferredMode, TransitOption option) {
+        String type = option.type();
+        return switch (preferredMode) {
+            case "walk" -> "도보".equals(type);
+            case "taxi" -> "택시".equals(type);
+            case "bus" -> "버스".equals(type);
+            case "subway" -> "지하철".equals(type);
+            case "combo" -> "버스+지하철".equals(type);
+            case "transit" -> !"도보".equals(type) && !"택시".equals(type);
+            default -> preferredMode.equals(type);
+        };
+    }
+
+    @Transactional
+    public ItineraryItemResponse updateItem(UUID itineraryId, UUID dayId, UUID itemId, UpdateItemRequest req, UUID userId) {
+        // 같은 날짜의 추가/시간 변경을 직렬화해, 동시 편집으로 같은 시각이
+        // 두 번 저장되는 check-then-act 레이스를 막는다.
+        ItineraryDay day = itineraryDayRepository.findByIdForUpdate(dayId)
+                .filter(d -> d.getItinerary().getId().equals(itineraryId))
+                .orElseThrow(() -> new EntityNotFoundException("Day를 찾을 수 없습니다. id=" + dayId));
+        validateAccess(day.getItinerary(), userId);
+
+        ItineraryItem item = day.getItems().stream()
+                .filter(existing -> existing.getId().equals(itemId))
+                .findFirst()
+                .orElseThrow(() -> new EntityNotFoundException("Item을 찾을 수 없습니다. id=" + itemId));
+
+        validateArrivalTimeAvailable(day, req.arrivalTime(), itemId);
+        LocalTime previousArrivalTime = item.getArrivalTime();
+
+        // travelMode만 오고 travelTimeMin이 없으면 = 사용자가 이동수단만 선택 → 재계산
+        if (req.travelMode() != null && req.travelTimeMin() == null) {
+            applyPreferredTravelMode(item, req.travelMode());
+            item.update(req.orderIndex(), req.arrivalTime(), req.durationMin(),
+                    item.getTravelMode(), item.getTravelTimeMin(), req.memo());
+        } else {
+            item.update(req.orderIndex(), req.arrivalTime(), req.durationMin(),
+                    req.travelMode(), req.travelTimeMin(), req.memo());
+        }
+
+        // 택시 구간은 도착 시각에 따라 소요시간이 달라진다 — 시각이 바뀌었으면 새 시각 기준으로 맞춘다
+        if (!Objects.equals(previousArrivalTime, item.getArrivalTime())) {
+            List<ItineraryItem> dayItems = day.getItems(); // orderIndex ASC 정렬됨
+            int idx = dayItems.indexOf(item);
+            refreshTaxiTime(item, idx > 0 ? dayItems.get(idx - 1) : null);
+        }
+
+        return ItineraryItemResponse.from(item, fetchCollectedSpotIds(userId), fetchVisitedItemIds(userId, List.of(item.getId())));
+    }
+
+    private void validateArrivalTimeAvailable(ItineraryDay day, LocalTime arrivalTime, UUID excludedItemId) {
+        if (arrivalTime == null) return;
+
+        boolean alreadyUsed = day.getItems().stream()
+                .filter(existing -> excludedItemId == null || !existing.getId().equals(excludedItemId))
+                .anyMatch(existing -> arrivalTime.equals(existing.getArrivalTime()));
+        if (alreadyUsed) {
+            throw new IllegalArgumentException("같은 날짜와 시간에는 일정을 하나만 추가할 수 있습니다. arrivalTime=" + arrivalTime);
+        }
+    }
+
+    @Transactional
+    public ItineraryItemResponse updateTravelMode(UUID itineraryId, UUID dayId, UUID itemId,
+                                                  UpdateTravelModeRequest req, UUID userId) {
+        ItineraryItem item = findItem(itineraryId, dayId, itemId);
+        validateAccess(item.getDay().getItinerary(), userId);
+        applyPreferredTravelModeStrict(item, req.travelMode());
+        return ItineraryItemResponse.from(item, fetchCollectedSpotIds(userId), fetchVisitedItemIds(userId, List.of(item.getId())));
+    }
+
+    // 이동수단 변경 화면에서 확정 전 버스/지하철/택시/도보 후보의 실제 소요시간·요금을 미리 보여주기 위한 조회 API
+    public List<TransitOption> getTravelModeOptions(UUID itineraryId, UUID dayId, UUID itemId, UUID userId) {
+        ItineraryItem item = findItem(itineraryId, dayId, itemId);
+        validateAccess(item.getDay().getItinerary(), userId);
+
+        List<ItineraryItem> dayItems = item.getDay().getItems(); // orderIndex ASC 정렬됨
+        int idx = dayItems.indexOf(item);
+        if (idx <= 0) {
+            throw new IllegalArgumentException("첫 번째 방문 항목은 이동수단 옵션이 없습니다.");
+        }
+
+        // 표시 순서·1인당 비용은 인원수 기준으로 정한다 (그룹 일정은 그룹원 수, 개인 일정은 1명)
+        Itinerary itinerary = item.getDay().getItinerary();
+        int partySize = itinerary.getGroupId() != null
+                ? (int) groupMemberRepository.countById_GroupId(itinerary.getGroupId())
+                : 1;
+        return transitRouteService.getPrioritizedOptions(
+                toSpotInfo(dayItems.get(idx - 1).getSpot()), toSpotInfo(item.getSpot()), partySize,
+                travelAtOf(item));
+    }
+
+    // 사용자가 이동수단(walk/transit/taxi)만 선택했을 때, 직전 스팟과의 구간을 해당 수단 기준으로 재계산
+    // 관대한 버전: updateItem()에서 호출. 첫 스팟(idx<=0)은 애초에 이동정보가 없는 게 정상이라
+    // 조용히 스킵하지만, 그 외의 실패(요청한 수단의 경로를 못 찾음)는 다른 수단으로 조용히
+    // 바꿔치기하지 않고 예외를 던진다 — 그렇지 않으면 "지하철을 선택했는데 도보로 저장됨" 같은
+    // 상황이 200 OK로 감춰져 버린다(2026-08-07 그룹 일정 버스/지하철 정보 조사에서 발견).
+    private void applyPreferredTravelMode(ItineraryItem item, String preferredMode) {
+        List<ItineraryItem> dayItems = item.getDay().getItems(); // orderIndex ASC 정렬됨
+
+        int idx = dayItems.indexOf(item);
+        if (idx <= 0) return; // 첫 스팟은 이동정보 없음, 변경 대상 아님
+
+        List<TransitOption> options = fetchLegOptions(dayItems.get(idx - 1), item);
+        TransitOption matched = options.stream()
+                .filter(opt -> matchesRequestedMode(preferredMode, opt))
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "요청한 이동수단(" + preferredMode + ")의 경로를 찾을 수 없습니다."));
+
+        applyMatchedOption(item, matched);
+    }
+
+    // 엄격한 버전: updateTravelMode()에서 호출. 사용자의 명시적 요청이므로 실패 시 명확한 예외를 던진다.
+    private void applyPreferredTravelModeStrict(ItineraryItem item, String preferredMode) {
+        List<ItineraryItem> dayItems = item.getDay().getItems(); // orderIndex ASC 정렬됨
+
+        int idx = dayItems.indexOf(item);
+        if (idx <= 0) {
+            throw new IllegalArgumentException("첫 번째 방문 항목은 이동수단을 설정할 수 없습니다.");
+        }
+
+        List<TransitOption> options = fetchLegOptions(dayItems.get(idx - 1), item);
+        if (options.isEmpty()) {
+            throw new IllegalArgumentException("요청한 이동수단(" + preferredMode + ")의 경로를 찾을 수 없습니다.");
+        }
+
+        TransitOption matched = options.stream()
+                .filter(opt -> matchesRequestedMode(preferredMode, opt))
+                .findFirst()
+                .orElseThrow(() -> new IllegalArgumentException(
+                        "요청한 이동수단(" + preferredMode + ")의 경로를 찾을 수 없습니다."));
+
+        applyMatchedOption(item, matched);
+    }
+
+    // 직전 항목과의 구간에 대한 이동수단 옵션 목록을 조회한다 (없으면 빈 리스트)
+    private List<TransitOption> fetchLegOptions(ItineraryItem prevItem, ItineraryItem item) {
+        List<SpotInfo> pair = List.of(toSpotInfo(prevItem.getSpot()), toSpotInfo(item.getSpot()));
+        List<TransitRouteResponse> routes = transitRouteService.getRoutesForDay(pair, null, travelAtOf(item));
+        return routes.isEmpty() ? List.of() : routes.get(0).options();
+    }
+
+    // 항목으로 들어오는 구간의 택시 계산 기준 시각 = 그 날짜 + 항목의 도착 예정 시각.
+    // 저장(addItem·이동수단 변경)과 옵션 조회가 모두 이 값을 써야 일정탭과 옵션 API의 택시 시간이 같다.
+    private LocalDateTime travelAtOf(ItineraryItem item) {
+        return TransitRouteService.toTravelAt(item.getDay().getDate(), item.getArrivalTime());
+    }
+
+    // 택시로 저장된 구간의 소요시간·요금을 항목의 현재 도착 시각 기준으로 다시 계산한다.
+    // 도착 시각만 바뀐 경우라 ODsay 조회 없이 택시만 계산한다. 택시가 아니거나 첫 항목이면 그대로 둔다.
+    private void refreshTaxiTime(ItineraryItem item, ItineraryItem prevItem) {
+        if (prevItem == null || !"taxi".equals(item.getTravelMode())) return;
+        TransitOption taxi = transitRouteService.estimateTaxi(
+                toSpotInfo(prevItem.getSpot()), toSpotInfo(item.getSpot()), travelAtOf(item));
+        item.updateTravelTimeAndFare(taxi.totalTime(), taxi.totalFare());
+    }
+
+    // 선택된 옵션의 경로 상세(노선번호·정류장명 등)를 항목에 반영한다
+    private void applyMatchedOption(ItineraryItem item, TransitOption matched) {
+        SubPath firstSubPath = TransitRouteUtils.findFirstTransitSubPath(matched.subPaths());
+        TransitDetail transitDetail = TransitDetail.from(matched, subwayScheduleMappingService.mapSubwaySegments(matched));
+
+        // routeType: subPath 실측 타입(버스/지하철) 우선, 없으면(도보/택시 옵션) 옵션 타입 그대로
+        // travel_mode DB 컬럼은 walk/transit/taxi 3종만 허용(CHECK 제약) — preferredMode가
+        // bus/subway/combo여도 여기선 matched.type() 기준으로 안전하게 축약해서 저장한다.
+        item.updateRoute(
+                TransitRouteUtils.toTravelMode(matched.type()),
+                matched.totalTime(),
+                TransitRouteUtils.toTravelFare(matched),
+                firstSubPath != null ? firstSubPath.type() : matched.type(),
+                firstSubPath != null ? firstSubPath.routeNo() : null,
+                firstSubPath != null ? firstSubPath.startName() : null,
+                firstSubPath != null ? firstSubPath.endName() : null,
+                firstSubPath != null ? firstSubPath.startArsId() : null,
+                transitDetail
+        );
+    }
+
+    @Transactional
+    public void deleteItem(UUID itineraryId, UUID dayId, UUID itemId, UUID userId) {
+        ItineraryItem item = findItem(itineraryId, dayId, itemId);
+        validateAccess(item.getDay().getItinerary(), userId);
+        itineraryItemRepository.delete(item);
+    }
+
+    // day에 속한 방문 항목 전체의 순서를 한 트랜잭션에서 원자적으로 재반영한다.
+    // updateItem처럼 항목별로 나눠 PATCH하면, 그룹 일정에서 여러 클라이언트가 거의 동시에
+    // flush할 때 서로 다른 순서 계산 결과가 겹쳐 쓰이며 order_index가 충돌할 수 있다
+    // (2026-08-12 프로덕션 DB에서 실제로 같은 day_id+order_index 중복 확인). 클라이언트는
+    // 항상 그 day의 전체 항목 id를 원하는 순서 그대로 보내야 하며, 일부만 보내거나
+    // 다른 항목이 섞이면 거부한다 — 부분 반영 시 조용히 잘못된 최종 순서가 저장되는
+    // 상황을 막기 위함.
+    @Transactional
+    public ItineraryDayResponse reorderItems(UUID itineraryId, UUID dayId, ReorderItemsRequest req, UUID userId) {
+        // findById(잠금 없음)로는 두 클라이언트가 동시에 서로 다른 순서를 반영할 때 나중
+        // 커밋이 앞선 커밋을 조용히 덮어쓸 수 있었다(1단계 감사에서 발견) — replaceDayItems와
+        // 같은 행 잠금으로 직렬화한다.
+        ItineraryDay day = itineraryDayRepository.findByIdForUpdate(dayId)
+                .filter(d -> d.getItinerary().getId().equals(itineraryId))
+                .orElseThrow(() -> new EntityNotFoundException("Day를 찾을 수 없습니다. id=" + dayId));
+        validateAccess(day.getItinerary(), userId);
+        checkDayVersion(day, req.expectedVersion(), userId);
+
+        List<ItineraryItem> currentItems = day.getItems();
+        Set<UUID> currentIds = currentItems.stream().map(ItineraryItem::getId).collect(Collectors.toSet());
+        if (!currentIds.equals(Set.copyOf(req.itemIds())) || currentIds.size() != req.itemIds().size()) {
+            throw new IllegalArgumentException("요청한 항목 목록이 현재 일차의 항목 구성과 일치하지 않습니다.");
+        }
+
+        Map<UUID, ItineraryItem> itemById = currentItems.stream()
+                .collect(Collectors.toMap(ItineraryItem::getId, i -> i));
+        for (int i = 0; i < req.itemIds().size(); i++) {
+            itemById.get(req.itemIds().get(i)).updateOrder(i);
+        }
+        bumpDayVersion(day);
+        return ItineraryDayResponse.from(day, fetchCollectedSpotIds(userId), Set.of());
+    }
+
+    // day의 @Version은 day 엔티티 자신의 컬럼이 바뀔 때만 Hibernate가 자동으로 올린다.
+    // replaceDayItems/reorderItems는 day에 속한 item들(자식 테이블 row)만 갱신하고 day 자신의
+    // 컬럼은 손대지 않으므로, 그냥 두면 구조를 아무리 바꿔도 version이 절대 오르지 않는다
+    // (로컬에서 8개 동시 replaceDayItems 요청을 보내 전부 200으로 통과하는 걸로 실제 확인,
+    // 2026-09-17) — 낙관적 락의 핵심 전제가 깨지는 셈이라 OPTIMISTIC_FORCE_INCREMENT로
+    // day 자신이 변경되지 않아도 매번 version을 강제로 올린다. flush까지 해야 이후
+    // day.getVersion()을 읽는 응답(ItineraryDayResponse.from)에 새 값이 반영된다.
+    private void bumpDayVersion(ItineraryDay day) {
+        // 대기 중인 item insert/update(saveAll)를 먼저 DB에 반영해야 한다 — 아래 refresh가
+        // day.getItems()까지 캐스케이드로 재조회하는데, 아직 flush 안 된(=DB에 없는) 새
+        // item을 refresh하면 "No row with the given identifier exists"로 실패한다
+        // (2026-09-17 로컬 재현·확인).
+        entityManager.flush();
+        itineraryDayRepository.bumpVersion(day.getId());
+        // bulk JPQL update는 영속성 컨텍스트를 거치지 않아 이미 로드된 day 인스턴스의
+        // version 필드는 그대로다 — 응답(ItineraryDayResponse.from)이 새 값을 읽도록
+        // day를 다시 조회해 동기화한다.
+        entityManager.refresh(day);
+    }
+
+    // expectedVersion이 null이면(구버전 프론트) 체크를 건너뛴다. 값이 있는데 현재 day의
+    // version과 다르면 그 사이 다른 요청이 먼저 반영된 것 — 서버가 이미 들고 있는 최신
+    // 상태를 실어 409로 던져, 호출부가 추가 조회 없이 바로 reconcile할 수 있게 한다.
+    private void checkDayVersion(ItineraryDay day, Long expectedVersion, UUID userId) {
+        if (expectedVersion == null) return;
+        if (!expectedVersion.equals(day.getVersion())) {
+            throw new DayVersionConflictException(
+                    ItineraryDayResponse.from(day, fetchCollectedSpotIds(userId), Set.of()));
+        }
+    }
+
+    // ── 내부 헬퍼 ──────────────────────────────────────────────────
+
+    // 여행 기간의 시작이 종료보다 뒤면 400. 같은 날짜면 시각까지 비교하고, 날짜가 다르면
+    // 날짜 순서만으로 결정된다(시작일 < 종료일이면 시각은 무엇이든 유효).
+    // 메시지 문구는 같은 도메인의 기존 검증(ItineraryGenerateService.validateTripDuration/
+    // validateActivityTime)과 맞췄다.
+    private void validatePeriodOrder(LocalDate startAt, LocalTime startTime, LocalDate endAt, LocalTime endTime) {
+        if (startAt == null || endAt == null) return;
+        if (endAt.isBefore(startAt)) {
+            throw new IllegalArgumentException(
+                    "종료일이 시작일보다 빠를 수 없습니다. startAt=" + startAt + ", endAt=" + endAt);
+        }
+        // 종료 == 시작은 허용한다. 당일치기 픽커(getMinTripEndDateTime)는 "시작 + 60분"을 그날
+        // 마지막 슬롯(23:50)으로 클램프하므로, 시작을 23:50으로 고르면 종료 하한도 23:50이 된다.
+        // 여기서 같은 값을 거부하면 UI로 고를 수 있는 모든 종료 시각이 400이 되어 저장 자체가 막힌다.
+        // 생성 폼(TripSetupForm)의 종료 픽커 하한도 시작 시각 자체라서 같은 상황이 만들어진다.
+        if (startAt.equals(endAt) && startTime != null && endTime != null && endTime.isBefore(startTime)) {
+            throw new IllegalArgumentException(
+                    "종료 시간은 시작 시간보다 빠를 수 없습니다. startTime=" + startTime + ", endTime=" + endTime);
+        }
+    }
+
+    private Set<UUID> fetchCollectedSpotIds(UUID userId) {
+        return collectionEntryRepository.findByUserIdAndCollectedTrue(userId).stream()
+                .map(e -> e.getSpot().getId())
+                .collect(Collectors.toSet());
+    }
+
+    // 이 일정의 어떤 방문 항목을 인증했는지 항목 id 집합으로 반환한다.
+    // 같은 관광지를 다른 일정에서 인증했더라도, 인증 기록이 이 항목(itineraryItemId)에 연결돼
+    // 있지 않으면 이 일정에서는 "미인증"으로 본다 — 일정마다 다시 인증하는 정책.
+    private Set<UUID> fetchVisitedItemIds(UUID userId, Collection<UUID> itemIds) {
+        if (itemIds.isEmpty()) return Set.of();
+        return Set.copyOf(visitRepository.findVerifiedItineraryItemIds(userId, itemIds));
+    }
+
+    private List<UUID> itemIdsOf(Itinerary itinerary) {
+        return itinerary.getDays().stream()
+                .flatMap(d -> d.getItems().stream())
+                .map(ItineraryItem::getId)
+                .toList();
+    }
+
+    // 개인 일정은 소유자만, 그룹 일정은 현재 그룹 멤버만 접근 허용 (읽기/수정/Day·Item 편집용)
+    // 그룹 일정에서는 만든 사람이라도 그룹을 나가면(leave) 더 이상 접근할 수 없어야 하므로 userId로 우회 허용하지 않는다.
+    private void validateAccess(Itinerary itinerary, UUID userId) {
+        if (itinerary.getGroupId() != null) {
+            if (groupMemberRepository.existsById_GroupIdAndId_UserId(itinerary.getGroupId(), userId)) return;
+            throw new IllegalArgumentException("해당 일정에 대한 권한이 없습니다.");
+        }
+        if (itinerary.getUserId().equals(userId)) return;
+        throw new IllegalArgumentException("해당 일정에 대한 권한이 없습니다.");
+    }
+
+    // 소유자만 허용 (일정 삭제처럼 그룹원에게 열어주면 안 되는 동작용)
+    private void validateOwnerOnly(Itinerary itinerary, UUID userId) {
+        if (!itinerary.getUserId().equals(userId)) {
+            throw new IllegalArgumentException("해당 일정에 대한 권한이 없습니다.");
+        }
+    }
+
+    private Itinerary findWithDetails(UUID id) {
+        return itineraryRepository.findById(id)
+                .orElseThrow(() -> new EntityNotFoundException("일정을 찾을 수 없습니다. id=" + id));
+    }
+
+    private ItineraryItem findItem(UUID itineraryId, UUID dayId, UUID itemId) {
+        return itineraryItemRepository.findById(itemId)
+                .filter(i -> i.getDay().getId().equals(dayId)
+                        && i.getDay().getItinerary().getId().equals(itineraryId))
+                .orElseThrow(() -> new EntityNotFoundException("항목을 찾을 수 없습니다. id=" + itemId));
+    }
+
+    private String blankToNull(String value) {
+        return (value == null || value.isBlank()) ? null : value;
+    }
+}
